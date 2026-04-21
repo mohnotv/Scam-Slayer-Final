@@ -1,7 +1,7 @@
 """
-SQLAlchemy ORM models.
+SQLAlchemy ORM models — SQLAlchemy 2.x declarative style.
 
-Tables: Call, Transcript, Highlight, Persona, Clip
+Tables: Persona, Call, TranscriptSegment, Highlight, Clip, AgentEvent
 Every agent logs structured JSON events to `agent_events` so the dashboard
 can replay any call.
 """
@@ -60,14 +60,22 @@ class Call(Base):
     status: Mapped[str] = mapped_column(String(50), default="active")  # active|ended|error
 
     persona: Mapped["Persona | None"] = relationship("Persona", back_populates="calls")
-    transcripts: Mapped[list["Transcript"]] = relationship("Transcript", back_populates="call")
+    transcript_segments: Mapped[list["TranscriptSegment"]] = relationship(
+        "TranscriptSegment", back_populates="call"
+    )
     highlights: Mapped[list["Highlight"]] = relationship("Highlight", back_populates="call")
     clips: Mapped[list["Clip"]] = relationship("Clip", back_populates="call")
     agent_events: Mapped[list["AgentEvent"]] = relationship("AgentEvent", back_populates="call")
 
 
-class Transcript(Base):
-    __tablename__ = "transcripts"
+class TranscriptSegment(Base):
+    """One chunk of transcribed speech — either from the scammer (STT) or the persona (TTS input).
+
+    Rows accumulate in real-time during a call. `is_final=False` rows are partial STT results
+    that may be superseded by a later final segment at the same timestamp.
+    """
+
+    __tablename__ = "transcript_segments"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"), nullable=False)
@@ -75,9 +83,10 @@ class Transcript(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     timestamp_ms: Mapped[int] = mapped_column(Integer, default=0)  # ms from call start
     is_final: Mapped[bool] = mapped_column(Boolean, default=False)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)  # STT confidence 0-1
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    call: Mapped["Call"] = relationship("Call", back_populates="transcripts")
+    call: Mapped["Call"] = relationship("Call", back_populates="transcript_segments")
 
 
 class Highlight(Base):

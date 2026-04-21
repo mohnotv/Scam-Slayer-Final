@@ -18,7 +18,7 @@ from backend.app.agents.classifier import classify_call
 from backend.app.agents.dialogue import generate_response
 from backend.app.agents.highlights import mine_highlights
 from backend.app.agents.persona import select_persona
-from backend.app.db.models import Call, Transcript
+from backend.app.db.models import Call, TranscriptSegment
 from backend.app.db.session import get_db
 from backend.app.services.twilio_client import build_stream_twiml
 
@@ -97,14 +97,15 @@ async def media_stream(
             if event == "media":
                 # In MVP: use mock scammer text; real: pipe payload["media"]["payload"] to Deepgram
                 mock_scammer_text = "You owe back taxes. You must pay or be arrested."
-                transcript = Transcript(
+                segment = TranscriptSegment(
                     call_id=call.id,
                     speaker="scammer",
                     text=mock_scammer_text,
                     timestamp_ms=0,
                     is_final=True,
+                    confidence=1.0,
                 )
-                db.add(transcript)
+                db.add(segment)
                 await db.commit()
 
                 if persona:
@@ -114,14 +115,15 @@ async def media_stream(
                     conversation_history.append({"role": "user", "content": mock_scammer_text})
                     conversation_history.append({"role": "assistant", "content": response_text})
 
-                    reply_transcript = Transcript(
+                    reply_segment = TranscriptSegment(
                         call_id=call.id,
                         speaker="persona",
                         text=response_text,
                         timestamp_ms=0,
                         is_final=True,
+                        confidence=1.0,
                     )
-                    db.add(reply_transcript)
+                    db.add(reply_segment)
                     await db.commit()
 
                     # TODO: synthesize via ElevenLabs and stream audio back

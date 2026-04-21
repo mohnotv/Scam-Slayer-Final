@@ -1,7 +1,7 @@
 """
 Highlight Miner Agent
 
-Inputs:  completed Call DB row + its Transcript rows
+Inputs:  completed Call DB row + its TranscriptSegment rows
 Outputs: list of Highlight DB rows (timestamp-tagged clips)
 Side effects: INSERTs Highlight rows; logs AgentEvent
 
@@ -10,10 +10,10 @@ Next step: run sentiment analysis + volume envelope on the audio to detect
            frustration spikes; score highlights by predicted virality.
 """
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import AgentEvent, Call, Highlight, Transcript
+from backend.app.db.models import AgentEvent, Highlight, TranscriptSegment
 
 
 async def mine_highlights(
@@ -31,13 +31,16 @@ async def mine_highlights(
         List of persisted Highlight ORM instances.
     """
     result = await db.execute(
-        select(Transcript)
-        .where(Transcript.call_id == call_id, Transcript.is_final == True)  # noqa: E712
-        .order_by(Transcript.timestamp_ms)
+        select(TranscriptSegment)
+        .where(
+            TranscriptSegment.call_id == call_id,
+            TranscriptSegment.is_final == True,  # noqa: E712
+        )
+        .order_by(TranscriptSegment.timestamp_ms)
     )
-    transcripts = result.scalars().all()
+    segments = result.scalars().all()
 
-    highlights = _mine_mock(call_id, list(transcripts))
+    highlights = _mine_mock(call_id, list(segments))
 
     for h in highlights:
         db.add(h)
@@ -54,7 +57,7 @@ async def mine_highlights(
     return highlights
 
 
-def _mine_mock(call_id: int, transcripts: list[Transcript]) -> list[Highlight]:
+def _mine_mock(call_id: int, transcripts: list[TranscriptSegment]) -> list[Highlight]:
     """
     MOCK: return two fixture highlights regardless of transcript content.
     In real implementation: run frustration spike detection here.

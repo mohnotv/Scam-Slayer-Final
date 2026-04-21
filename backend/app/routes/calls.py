@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import AgentEvent, Call, Highlight, Transcript
+from backend.app.db.models import AgentEvent, Call, Highlight, TranscriptSegment
 from backend.app.db.session import get_db
 
 router = APIRouter(prefix="/calls", tags=["calls"])
@@ -114,9 +114,9 @@ async def get_call(call_id: int, db: AsyncSession = Depends(get_db)) -> CallSumm
 @router.get("/{call_id}/transcript", response_model=list[TranscriptRow])
 async def get_transcript(call_id: int, db: AsyncSession = Depends(get_db)) -> list[TranscriptRow]:
     result = await db.execute(
-        select(Transcript)
-        .where(Transcript.call_id == call_id)
-        .order_by(Transcript.timestamp_ms)
+        select(TranscriptSegment)
+        .where(TranscriptSegment.call_id == call_id)
+        .order_by(TranscriptSegment.timestamp_ms)
     )
     return [TranscriptRow.model_validate(r) for r in result.scalars().all()]
 
