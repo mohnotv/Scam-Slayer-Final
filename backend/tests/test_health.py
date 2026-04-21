@@ -76,6 +76,6 @@ async def test_openapi_schema_accessible() -> None:
     schema = r.json()
     paths = schema["paths"]
     assert "/health" in paths
-    assert "/calls" in paths
-    assert "/personas" in paths
-    assert "/clips" in paths
+    assert "/api/calls" in paths
+    assert "/api/personas" in paths
+    assert "/api/clips" in paths

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getCalls, type Call } from "../lib/api";
+import { getCalls, type CallListItem } from "../lib/api";
 
 function StatusBadge({ status }: { status: string }) {
   const color =
@@ -16,8 +16,20 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function ScamBadge({ isScam }: { isScam: boolean }) {
+  return isScam ? (
+    <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-red-900/60 text-red-300">
+      SCAM
+    </span>
+  ) : (
+    <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold bg-gray-800 text-gray-400">
+      clean
+    </span>
+  );
+}
+
 export default function Dashboard() {
-  const [calls, setCalls] = useState<Call[]>([]);
+  const [calls, setCalls] = useState<CallListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,10 +54,10 @@ export default function Dashboard() {
           <thead>
             <tr className="border-b border-gray-800 text-gray-400 text-left">
               <th className="pb-2 pr-4">ID</th>
-              <th className="pb-2 pr-4">Caller</th>
-              <th className="pb-2 pr-4">Scam Type</th>
-              <th className="pb-2 pr-4">Confidence</th>
+              <th className="pb-2 pr-4">Scam</th>
+              <th className="pb-2 pr-4">Type</th>
               <th className="pb-2 pr-4">Persona</th>
+              <th className="pb-2 pr-4">Highlights</th>
               <th className="pb-2 pr-4">Duration</th>
               <th className="pb-2">Status</th>
             </tr>
@@ -58,10 +70,12 @@ export default function Dashboard() {
                     #{c.id}
                   </Link>
                 </td>
-                <td className="py-2 pr-4 font-mono text-xs">{c.caller_number}</td>
+                <td className="py-2 pr-4">
+                  <ScamBadge isScam={c.is_scam} />
+                </td>
                 <td className="py-2 pr-4">{c.scam_type}</td>
-                <td className="py-2 pr-4">{(c.scam_confidence * 100).toFixed(0)}%</td>
                 <td className="py-2 pr-4">{c.persona_name ?? "—"}</td>
+                <td className="py-2 pr-4">{c.highlight_count}</td>
                 <td className="py-2 pr-4">{c.duration_seconds}s</td>
                 <td className="py-2">
                   <StatusBadge status={c.status} />

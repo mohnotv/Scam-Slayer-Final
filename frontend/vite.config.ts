@@ -6,9 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/calls": "http://localhost:8000",
-      "/personas": "http://localhost:8000",
-      "/clips": "http://localhost:8000",
+      "/api": "http://localhost:8000",
       "/voice": "http://localhost:8000",
       "/health": "http://localhost:8000",
     },

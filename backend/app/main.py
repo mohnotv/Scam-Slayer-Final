@@ -56,10 +56,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(voice.router)
-app.include_router(calls.router)
-app.include_router(personas.router)
-app.include_router(clips.router)
+app.include_router(voice.router)                           # /voice/...  (Twilio — no /api prefix)
+app.include_router(calls.router, prefix="/api")            # /api/calls/...
+app.include_router(personas.router, prefix="/api")         # /api/personas/...
+app.include_router(clips.router, prefix="/api")            # /api/clips/...
 
 
 @app.get("/health", tags=["meta"])

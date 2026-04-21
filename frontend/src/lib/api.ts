@@ -1,9 +1,11 @@
 /**
  * Typed fetch wrapper for the ScamSlayer backend.
- * Base URL is empty — Vite's proxy forwards /calls, /personas, /clips to :8000.
+ *
+ * All REST endpoints live under /api — Vite's dev proxy forwards /api/* to :8000.
+ * WebSocket endpoints (/voice/stream) are handled separately by the browser.
  */
 
-const BASE = "";
+const BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -19,16 +21,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export interface Call {
+export interface CallListItem {
   id: number;
-  twilio_call_sid: string;
-  caller_number: string;
-  is_scam: boolean;
-  scam_confidence: number;
-  scam_type: string;
-  status: string;
+  started_at: string;
   duration_seconds: number;
   persona_name: string | null;
+  is_scam: boolean;
+  scam_type: string;
+  status: string;
+  highlight_count: number;
+  clip_id: number | null;
 }
 
 export interface TranscriptRow {
@@ -37,6 +39,7 @@ export interface TranscriptRow {
   text: string;
   timestamp_ms: number;
   is_final: boolean;
+  confidence: number;
 }
 
 export interface HighlightRow {
@@ -46,15 +49,6 @@ export interface HighlightRow {
   reason: string;
   score: number;
   transcript_snippet: string;
-}
-
-export interface Persona {
-  id: number;
-  name: string;
-  backstory: string;
-  speech_tics: string;
-  elevenlabs_voice_id: string;
-  scam_types: string[];
 }
 
 export interface Clip {
@@ -67,12 +61,65 @@ export interface Clip {
   status: string;
 }
 
+export interface CallDetail {
+  id: number;
+  twilio_call_sid: string;
+  caller_number: string;
+  is_scam: boolean;
+  scam_confidence: number;
+  scam_type: string;
+  status: string;
+  duration_seconds: number;
+  started_at: string;
+  ended_at: string | null;
+  persona_name: string | null;
+  transcript: TranscriptRow[];
+  highlights: HighlightRow[];
+  clip_url: string | null;
+  clip: Clip | null;
+}
+
+export interface SimulateRequest {
+  scammer_utterances: string[];
+}
+
+export interface SimulateResponse {
+  call_id: number;
+  persona_name: string;
+  is_scam: boolean;
+  confidence: number;
+  scam_type: string;
+  duration_seconds: number;
+  transcript: TranscriptRow[];
+  highlights: HighlightRow[];
+  clip: Clip | null;
+}
+
+export interface Persona {
+  id: number;
+  name: string;
+  backstory: string;
+  speech_tics: string;
+  elevenlabs_voice_id: string;
+  scam_types: string[];
+}
+
 // ── Calls ──────────────────────────────────────────────────────────────────
 
-export const getCalls = () => request<Call[]>("/calls");
-export const getCall = (id: number) => request<Call>(`/calls/${id}`);
-export const getTranscript = (id: number) => request<TranscriptRow[]>(`/calls/${id}/transcript`);
-export const getHighlights = (id: number) => request<HighlightRow[]>(`/calls/${id}/highlights`);
+export const getCalls = () => request<CallListItem[]>("/calls");
+export const getCall = (id: number) => request<CallDetail>(`/calls/${id}`);
+export const getTranscript = (id: number) =>
+  request<TranscriptRow[]>(`/calls/${id}/transcript`);
+export const getHighlights = (id: number) =>
+  request<HighlightRow[]>(`/calls/${id}/highlights`);
+export const simulateCall = (body: SimulateRequest) =>
+  request<SimulateResponse>("/calls/simulate", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+/** URL that streams the .mp4 file for a call. */
+export const clipUrl = (callId: number) => `/api/calls/${callId}/clip`;
 
 // ── Personas ───────────────────────────────────────────────────────────────
 
@@ -81,11 +128,14 @@ export const getPersona = (id: number) => request<Persona>(`/personas/${id}`);
 export const createPersona = (body: Omit<Persona, "id">) =>
   request<Persona>("/personas", { method: "POST", body: JSON.stringify(body) });
 export const updatePersona = (id: number, body: Omit<Persona, "id">) =>
-  request<Persona>(`/personas/${id}`, { method: "PUT", body: JSON.stringify(body) });
+  request<Persona>(`/personas/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
 export const deletePersona = (id: number) =>
-  fetch(`/personas/${id}`, { method: "DELETE" });
+  fetch(`${BASE}/personas/${id}`, { method: "DELETE" });
 
-// ── Clips ──────────────────────────────────────────────────────────────────
+// ── Clips (legacy endpoints still available) ───────────────────────────────
 
 export const getClips = () => request<Clip[]>("/clips");
 export const getClip = (id: number) => request<Clip>(`/clips/${id}`);
