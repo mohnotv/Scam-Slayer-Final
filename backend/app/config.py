@@ -46,5 +46,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"  # DEBUG | INFO | WARNING | ERROR
     debug: bool = False      # enables FastAPI debug mode + SQLAlchemy echo
 
+    # ── Agent toggles ──────────────────────────────────────────────────────────
+    # Set MOCK_CLAUDE=false (and provide a real ANTHROPIC_API_KEY) to use the
+    # live Claude API in the Dialogue Agent.  True by default so the system
+    # runs without any API key during development.
+    mock_claude: bool = True
+
 
 settings = Settings()

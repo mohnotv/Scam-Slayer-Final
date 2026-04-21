@@ -1,95 +1,139 @@
 """
 Social Agent
 
-Inputs:  Clip row, Highlight rows, Call row
-Outputs: caption string, hashtag list, suggested posting time
-Side effects: UPDATEs Clip.caption and Clip.hashtags; logs AgentEvent
+Inputs:
+    call_id               — DB id of the Call
+    clip_db_id            — DB id of the Clip row (to update caption/hashtags)
+    clip_duration_seconds — length of the rendered clip in seconds
+    call_duration_seconds — total call length in seconds (drives caption narrative)
+    highlights            — HighlightsResult (used for the best snippet quote)
 
-MVP status: MOCK — returns hardcoded caption and hashtags.
-Next step: use Claude to write a platform-aware caption from the transcript highlights;
-           run virality features (analysis/03_virality_features.ipynb) to pick post time.
+Outputs:
+    SocialResult — caption, hashtags, suggested_post_time
+
+Side effects:
+    UPDATEs Clip.caption and Clip.hashtags in the DB.
+    Writes one AgentEvent row.
+
+Mock status: hardcoded caption + hashtag list targeting scam-bait content virality patterns.
+Next step: use Claude to write a platform-aware caption from the actual transcript highlights;
+           run virality features (analysis/03_virality_features.ipynb) to choose post time.
 """
 
 import json
-from dataclasses import dataclass
 
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import AgentEvent, Call, Clip, Highlight
+from backend.app.agents.highlights import HighlightsResult
+from backend.app.db.models import AgentEvent, Clip
 
 
-@dataclass
-class SocialPackage:
+class SocialResult(BaseModel):
+    """Typed output of the Social Agent."""
+
     caption: str
     hashtags: list[str]
-    suggested_post_time: str  # ISO-8601 or human label
+    suggested_post_time: str  # e.g. "Thursday 7–9 PM ET"
 
 
-async def generate_social_package(
-    call_id: int,
-    clip: Clip,
-    call: Call,
-    highlights: list[Highlight],
-    db: AsyncSession,
-) -> SocialPackage:
+class SocialAgent:
     """
-    Generate caption, hashtags, and suggested post time for a clip.
+    Generates a social-media-ready caption, hashtags, and posting time for a clip.
 
-    Args:
-        call_id:    DB id of the Call.
-        clip:       The rendered Clip row.
-        call:       The Call row (scam_type, duration, etc.).
-        highlights: Highlights included in the clip.
-        db:         Async DB session.
-
-    Returns:
-        SocialPackage with all fields populated.
+    Instantiate per-request and call ``await agent.run(...)``.
     """
-    package = _generate_mock(call, highlights)
 
-    clip.caption = package.caption
-    clip.hashtags = json.dumps(package.hashtags)
-    db.add(clip)
+    _HASHTAGS: list[str] = [
+        "#scambaiting",
+        "#scammergotscammed",
+        "#grandmabetty",
+        "#AIscambait",
+        "#ScamSlayer",
+        "#satisfying",
+        "#fyp",
+        "#scamalert",
+    ]
 
-    event = AgentEvent(
-        call_id=call_id,
-        agent="social",
-        event_type="social_package_generated",
-        payload={
-            "clip_id": clip.id,
-            "caption_length": len(package.caption),
-            "hashtag_count": len(package.hashtags),
-            "suggested_post_time": package.suggested_post_time,
-        },
-    )
-    db.add(event)
-    await db.commit()
+    def __init__(self, db: AsyncSession) -> None:
+        self._db = db
 
-    return package
+    async def run(
+        self,
+        call_id: int,
+        clip_db_id: int,
+        clip_duration_seconds: float,
+        call_duration_seconds: int,
+        highlights: HighlightsResult,
+    ) -> SocialResult:
+        """
+        Generate and persist social copy for a clip.
 
+        Args:
+            call_id:               DB id of the Call.
+            clip_db_id:            DB id of the Clip to update.
+            clip_duration_seconds: Rendered clip length.
+            call_duration_seconds: Full call duration (for caption narrative).
+            highlights:            HighlightsResult for best-snippet extraction.
 
-def _generate_mock(call: Call, highlights: list[Highlight]) -> SocialPackage:
-    """
-    MOCK: hardcoded social package.
-    Replace with Claude-powered caption writing + virality model.
-    """
-    best = max(highlights, key=lambda h: h.score) if highlights else None
-    snippet = best.transcript_snippet[:80] if best else "…"
+        Returns:
+            SocialResult with caption, hashtags, and posting window.
+        """
+        result = self._generate_mock(call_duration_seconds, highlights)
 
-    return SocialPackage(
-        caption=(
-            f'POV: You\'re a scammer and Grandma Betty just asked about her cat '
-            f'for the 4th time 😭\n\n"{snippet}…"\n\n'
-            f"She kept him on for {call.duration_seconds // 60} minutes. Legend. 🫶"
-        ),
-        hashtags=[
-            "#scambaiting",
-            "#scammergotscammed",
-            "#grandmabetty",
-            "#AIscambait",
-            "#ScamSlayer",
-            "#satisfying",
-            "#fyp",
-        ],
-        suggested_post_time="Thursday 7–9 PM ET",
-    )
+        # Persist caption + hashtags back to the Clip row
+        clip_q = await self._db.execute(select(Clip).where(Clip.id == clip_db_id))
+        clip = clip_q.scalar_one_or_none()
+        if clip is not None:
+            clip.caption = result.caption
+            clip.hashtags = json.dumps(result.hashtags)
+            self._db.add(clip)
+
+        self._db.add(AgentEvent(
+            call_id=call_id,
+            agent="social",
+            event_type="social_package_generated",
+            payload={
+                "clip_id": clip_db_id,
+                "caption_length": len(result.caption),
+                "hashtag_count": len(result.hashtags),
+                "suggested_post_time": result.suggested_post_time,
+                "mocked": True,
+            },
+        ))
+        await self._db.commit()
+
+        return result
+
+    @classmethod
+    def _generate_mock(
+        cls,
+        call_duration_seconds: int,
+        highlights: HighlightsResult,
+    ) -> SocialResult:
+        """
+        MOCK: hardcoded caption using the highest-scoring highlight snippet.
+        Replace with Claude + virality-model call when ready.
+        """
+        best = (
+            max(highlights.highlights, key=lambda h: h.score)
+            if highlights.highlights
+            else None
+        )
+        snippet = (best.transcript_snippet[:80] + "…") if best else "…"
+        minutes = call_duration_seconds // 60 or 1
+
+        caption = (
+            f"POV: You're a scammer and Grandma Betty just asked about her cat "
+            f"for the 4th time 😭\n\n"
+            f'"{snippet}"\n\n'
+            f"She kept him on for {minutes} minute{'s' if minutes != 1 else ''}. "
+            f"Legend. 🫶"
+        )
+
+        return SocialResult(
+            caption=caption,
+            hashtags=cls._HASHTAGS,
+            suggested_post_time="Thursday 7–9 PM ET",
+        )

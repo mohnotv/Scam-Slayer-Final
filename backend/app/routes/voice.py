@@ -1,9 +1,9 @@
 """
 Voice routes — Twilio webhooks and Media Stream WebSocket.
 
-POST /voice/incoming  — called by Twilio when a new call arrives
-WS   /voice/stream/{call_sid} — bidirectional audio stream (mulaw 8kHz)
-POST /voice/status    — Twilio call-status callback (ended, failed, etc.)
+POST /voice/incoming         — Twilio calls this when a new call arrives
+WS   /voice/stream/{sid}     — bidirectional mulaw audio stream
+POST /voice/status           — Twilio call-status callback (ended, failed…)
 """
 
 import json
@@ -12,13 +12,15 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.agents.classifier import classify_call
-from backend.app.agents.dialogue import generate_response
-from backend.app.agents.highlights import mine_highlights
-from backend.app.agents.persona import select_persona
-from backend.app.db.models import Call, TranscriptSegment
+from backend.app.agents.classifier import ClassifierAgent
+from backend.app.agents.dialogue import DialogueAgent
+from backend.app.agents.highlights import HighlightMinerAgent
+from backend.app.agents.persona import PersonaAgent
+from backend.app.config import settings
+from backend.app.db.models import Call, Persona, TranscriptSegment
 from backend.app.db.session import get_db
 from backend.app.services.twilio_client import build_stream_twiml
 
@@ -27,13 +29,18 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 
 
 @router.post("/incoming")
-async def incoming_call(request: Request, db: AsyncSession = Depends(get_db)) -> Response:
+async def incoming_call(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
     """
-    Twilio webhook — fires the moment a call connects.
-    1. Create Call row.
-    2. Run Classifier Agent.
-    3. Select Persona.
-    4. Return TwiML to open Media Stream.
+    Twilio webhook — fires the moment an inbound call connects.
+
+    Pipeline:
+      1. Create Call row
+      2. ClassifierAgent → is_scam + scam_type
+      3. PersonaAgent    → select / create Betty
+      4. Return TwiML to open Media Stream WebSocket
     """
     form = await request.form()
     call_sid: str = str(form.get("CallSid", "MOCK_SID"))
@@ -44,14 +51,14 @@ async def incoming_call(request: Request, db: AsyncSession = Depends(get_db)) ->
     await db.commit()
     await db.refresh(call)
 
-    classification = await classify_call(call.id, caller, db)
+    classification = await ClassifierAgent(db).run(call.id, caller)
     call.is_scam = classification.is_scam
     call.scam_confidence = classification.confidence
     call.scam_type = classification.scam_type
-    db.add(call)
 
-    persona = await select_persona(call.id, classification.scam_type, db)
-    call.persona_id = persona.id
+    persona_result = await PersonaAgent(db).run(call.id, classification.scam_type)
+    call.persona_id = persona_result.db_id
+
     db.add(call)
     await db.commit()
 
@@ -67,27 +74,36 @@ async def media_stream(
 ) -> None:
     """
     Twilio Media Stream WebSocket.
-    Receives mulaw audio from scammer, pipes to STT, sends LLM response to TTS,
-    and streams TTS audio back.
 
-    MVP: echoes mock transcript chunks and generates a real Claude response.
+    Receives JSON frames from Twilio:
+      {"event": "media",  "media": {"payload": "<base64-mulaw>"}}
+      {"event": "stop"}
+
+    Mock phase behaviour:
+      - Scammer audio is replaced with a fixed fixture utterance.
+      - DialogueAgent is called for real (MOCK_CLAUDE=true by default).
+      - TTS synthesis is skipped; the response is logged only.
     """
     await websocket.accept()
-    conversation_history: list[dict] = []
+    conversation_history: list[dict[str, str]] = []
 
-    from sqlalchemy import select as sa_select
-    result = await db.execute(sa_select(Call).where(Call.twilio_call_sid == call_sid))
-    call = result.scalar_one_or_none()
+    # ── Fetch call + persona ───────────────────────────────────────────────────
+    call_q = await db.execute(select(Call).where(Call.twilio_call_sid == call_sid))
+    call = call_q.scalar_one_or_none()
     if call is None:
         await websocket.close(code=1008)
         return
 
-    from backend.app.db.models import Persona
-    persona = None
+    persona_data = None
     if call.persona_id:
-        p_result = await db.execute(sa_select(Persona).where(Persona.id == call.persona_id))
-        persona = p_result.scalar_one_or_none()
+        p_q = await db.execute(select(Persona).where(Persona.id == call.persona_id))
+        persona_orm = p_q.scalar_one_or_none()
+        if persona_orm:
+            persona_data = PersonaAgent.orm_to_result(persona_orm)
 
+    dialogue_agent = DialogueAgent(db)
+
+    # ── Main receive loop ──────────────────────────────────────────────────────
     try:
         while True:
             raw = await websocket.receive_text()
@@ -95,39 +111,53 @@ async def media_stream(
             event = msg.get("event")
 
             if event == "media":
-                # In MVP: use mock scammer text; real: pipe payload["media"]["payload"] to Deepgram
-                mock_scammer_text = "You owe back taxes. You must pay or be arrested."
-                segment = TranscriptSegment(
+                # Real path: decode msg["media"]["payload"] → pipe to Deepgram STT
+                # Mock path: use a fixed utterance so the rest of the pipeline runs
+                mock_scammer_text = "You owe back taxes. Pay immediately or be arrested."
+
+                db.add(TranscriptSegment(
                     call_id=call.id,
                     speaker="scammer",
                     text=mock_scammer_text,
                     timestamp_ms=0,
                     is_final=True,
                     confidence=1.0,
-                )
-                db.add(segment)
+                ))
                 await db.commit()
 
-                if persona:
-                    response_text = await generate_response(
-                        call.id, persona, conversation_history, mock_scammer_text, db
+                if persona_data:
+                    dialogue_result = await dialogue_agent.run(
+                        call.id,
+                        persona_data,
+                        conversation_history,
+                        mock_scammer_text,
                     )
                     conversation_history.append({"role": "user", "content": mock_scammer_text})
-                    conversation_history.append({"role": "assistant", "content": response_text})
+                    conversation_history.append({"role": "assistant", "content": dialogue_result.utterance})
 
-                    reply_segment = TranscriptSegment(
+                    db.add(TranscriptSegment(
                         call_id=call.id,
                         speaker="persona",
-                        text=response_text,
+                        text=dialogue_result.utterance,
                         timestamp_ms=0,
                         is_final=True,
                         confidence=1.0,
-                    )
-                    db.add(reply_segment)
+                    ))
                     await db.commit()
 
-                    # TODO: synthesize via ElevenLabs and stream audio back
-                    logger.info("Persona response: %s", response_text)
+                    # TODO: synthesize via ElevenLabs and stream back as base64 mulaw
+                    logger.info(
+                        "Persona [%s] turn %d: %s",
+                        persona_data.name,
+                        dialogue_result.turn_index,
+                        dialogue_result.utterance[:80],
+                    )
+
+                    # Enforce max call duration
+                    elapsed = (datetime.utcnow() - call.started_at).seconds
+                    if elapsed >= settings.max_call_duration_seconds:
+                        logger.info("Max call duration reached — closing WebSocket.")
+                        break
 
             elif event == "stop":
                 break
@@ -137,26 +167,32 @@ async def media_stream(
     finally:
         call.ended_at = datetime.utcnow()
         call.status = "ended"
+        if call.started_at and call.ended_at:
+            call.duration_seconds = int((call.ended_at - call.started_at).total_seconds())
         db.add(call)
         await db.commit()
-        await mine_highlights(call.id, db)
+        # Mine highlights as soon as the call ends (runs synchronously in the WS finalizer)
+        await HighlightMinerAgent(db).run(call.id)
 
 
 @router.post("/status")
-async def call_status(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
-    """Twilio status callback — update Call row when the call ends."""
+async def call_status(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, bool]:
+    """Twilio status callback — keeps Call.status in sync with Twilio's truth."""
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
-    call_status_value = str(form.get("CallStatus", ""))
+    twilio_status = str(form.get("CallStatus", ""))
     duration = int(form.get("CallDuration", 0))
 
-    from sqlalchemy import select as sa_select
-    result = await db.execute(sa_select(Call).where(Call.twilio_call_sid == call_sid))
-    call = result.scalar_one_or_none()
+    call_q = await db.execute(select(Call).where(Call.twilio_call_sid == call_sid))
+    call = call_q.scalar_one_or_none()
     if call:
-        call.status = call_status_value
+        call.status = twilio_status
         call.duration_seconds = duration
-        call.ended_at = call.ended_at or datetime.utcnow()
+        if not call.ended_at:
+            call.ended_at = datetime.utcnow()
         db.add(call)
         await db.commit()
 
