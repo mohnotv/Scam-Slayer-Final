@@ -133,7 +133,9 @@ async def media_stream(
                         mock_scammer_text,
                     )
                     conversation_history.append({"role": "user", "content": mock_scammer_text})
-                    conversation_history.append({"role": "assistant", "content": dialogue_result.utterance})
+                    conversation_history.append(
+                        {"role": "assistant", "content": dialogue_result.utterance}
+                    )
 
                     db.add(TranscriptSegment(
                         call_id=call.id,
@@ -184,7 +186,7 @@ async def call_status(
     form = await request.form()
     call_sid = str(form.get("CallSid", ""))
     twilio_status = str(form.get("CallStatus", ""))
-    duration = int(form.get("CallDuration", 0))
+    duration = int(str(form.get("CallDuration", 0)))
 
     call_q = await db.execute(select(Call).where(Call.twilio_call_sid == call_sid))
     call = call_q.scalar_one_or_none()

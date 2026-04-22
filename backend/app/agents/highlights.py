@@ -46,7 +46,7 @@ class HighlightsResult(BaseModel):
 
 # ── Mock highlight templates ──────────────────────────────────────────────────
 
-_MOCK_TEMPLATES: list[dict] = [
+_MOCK_TEMPLATES: list[dict[str, object]] = [
     {
         "start_ms": 12_000,
         "end_ms": 27_000,

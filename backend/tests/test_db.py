@@ -9,19 +9,17 @@ session factory helper.  Everything runs against an in-memory SQLite DB
 import json
 
 import pytest
-from sqlalchemy import inspect, select, text
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import (
     AgentEvent,
-    Base,
     Call,
     Clip,
     Highlight,
     Persona,
     TranscriptSegment,
 )
-
 
 # ── Table creation ─────────────────────────────────────────────────────────────
 
@@ -167,7 +165,8 @@ async def test_partial_and_final_segments(db: AsyncSession, call: Call) -> None:
         call_id=call.id, speaker="scammer", text="You owe", timestamp_ms=500, is_final=False
     ))
     db.add(TranscriptSegment(
-        call_id=call.id, speaker="scammer", text="You owe back taxes.", timestamp_ms=500, is_final=True
+        call_id=call.id, speaker="scammer", text="You owe back taxes.",
+        timestamp_ms=500, is_final=True,
     ))
     await db.commit()
 
@@ -278,7 +277,9 @@ async def test_multiple_agent_events_ordered(db: AsyncSession, call: Call) -> No
 @pytest.mark.asyncio
 async def test_call_relationships_accessible(db: AsyncSession, call: Call) -> None:
     """Verify that all relationship attributes on Call are queryable."""
-    db.add(TranscriptSegment(call_id=call.id, speaker="scammer", text="Hello", timestamp_ms=0, is_final=True))
+    db.add(TranscriptSegment(
+        call_id=call.id, speaker="scammer", text="Hello", timestamp_ms=0, is_final=True,
+    ))
     db.add(Highlight(call_id=call.id, start_ms=0, end_ms=5000, score=0.5))
     db.add(Clip(call_id=call.id))
     db.add(AgentEvent(call_id=call.id, agent="test", event_type="test", payload={}))

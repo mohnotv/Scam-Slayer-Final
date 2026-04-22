@@ -10,6 +10,7 @@ GET  /{id}/highlights   — highlights ordered by virality score desc
 GET  /{id}/events       — agent event log for dashboard replay
 """
 
+import json as _json
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,9 +18,9 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.agents.classifier import ClassifierAgent
 from backend.app.agents.dialogue import DialogueAgent
@@ -73,7 +74,7 @@ class EventRow(BaseModel):
     id: int
     agent: str
     event_type: str
-    payload: dict
+    payload: dict[str, object]
     created_at: str
 
     model_config = {"from_attributes": True}
@@ -138,8 +139,6 @@ class CallDetail(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-import json as _json
 
 
 def _clip_orm_to_out(c: Clip) -> ClipOut:

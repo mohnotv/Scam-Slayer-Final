@@ -26,8 +26,10 @@ Next step: pipe real Deepgram transcript chunks here as scammer_text;
 import json
 import logging
 from pathlib import Path
+from typing import cast
 
 from anthropic import AsyncAnthropic
+from anthropic.types import MessageParam
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -157,7 +159,10 @@ RULES
     ) -> str:
         """Call the real Claude API and return the response text."""
         client = _get_claude_client()
-        messages = list(history) + [{"role": "user", "content": scammer_text}]
+        raw_messages = list(history) + [{"role": "user", "content": scammer_text}]
+        # The SDK types MessageParam more narrowly than dict[str,str]; cast is safe
+        # because the structure is identical — role + content strings.
+        messages = cast(list[MessageParam], raw_messages)
         response = await client.messages.create(
             model=settings.anthropic_model,
             max_tokens=256,

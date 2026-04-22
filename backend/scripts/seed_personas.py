@@ -6,8 +6,8 @@ Run: python -m backend.scripts.seed_personas
 import asyncio
 import json
 
-from backend.app.db.session import AsyncSessionLocal, init_db
 from backend.app.db.models import Persona
+from backend.app.db.session import AsyncSessionLocal, init_db
 
 PERSONAS = [
     {
@@ -17,7 +17,9 @@ PERSONAS = [
             "Widowed 4 years ago. Dotes on her 6 grandchildren. Hard of hearing, "
             "frequently loses track of sentences. Her cat Mr. Whiskers is a recurring topic."
         ),
-        "speech_tics": "Says 'Oh my stars!' Calls everyone 'honey'. Mentions Mr. Whiskers unprompted.",
+        "speech_tics": (
+            "Says 'Oh my stars!' Calls everyone 'honey'. Mentions Mr. Whiskers unprompted."
+        ),
         "elevenlabs_voice_id": "EXAVITQu4vr4xnSDxMaL",
         "scam_types": json.dumps(["irs_impersonation", "grandparent", "lottery", "tech_support"]),
     },
@@ -28,7 +30,9 @@ PERSONAS = [
             "the phone. Has to put the phone down to find his glasses repeatedly. "
             "Tells long, meandering stories about his bowling league."
         ),
-        "speech_tics": "Says 'Now where was I?' frequently. Mentions his bowling league. Shouts accidentally.",
+        "speech_tics": (
+            "Says 'Now where was I?' frequently. Mentions his bowling league. Shouts accidentally."
+        ),
         "elevenlabs_voice_id": "VR6AewLTigWG4xSOukaG",
         "scam_types": json.dumps(["irs_impersonation", "medicare", "tech_support"]),
     },

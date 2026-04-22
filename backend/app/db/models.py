@@ -41,7 +41,8 @@ class Persona(Base):
 
     @property
     def scam_types_list(self) -> list[str]:
-        return json.loads(self.scam_types)
+        result: list[str] = json.loads(self.scam_types)
+        return result
 
 
 class Call(Base):
@@ -128,7 +129,7 @@ class AgentEvent(Base):
     call_id: Mapped[int] = mapped_column(ForeignKey("calls.id"), nullable=False)
     agent: Mapped[str] = mapped_column(String(50), nullable=False)  # e.g. "dialogue"
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     call: Mapped["Call"] = relationship("Call", back_populates="agent_events")
