@@ -29,7 +29,6 @@ export default function App() {
         <div className="flex items-center gap-2 mr-6">
           <span className="text-green-400 text-lg">⚔</span>
           <span className="font-bold text-white tracking-tight">ScamSlayer</span>
-          <span className="text-xs text-slate-500 font-mono ml-1">v0.1</span>
         </div>
         <NavItem to="/" label="Dashboard" exact />
         <NavItem to="/personas" label="Personas" />

@@ -7,7 +7,7 @@ All tests use the shared in-memory DB fixtures from conftest.py.
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.db.models import Call
+from backend.app.db.models import Call, TranscriptSegment
 
 
 @pytest.mark.asyncio
@@ -23,21 +23,41 @@ async def test_full_pipeline_mock(db: AsyncSession, call: Call) -> None:
     from backend.app.agents.persona import PersonaAgent
     from backend.app.agents.social import SocialAgent
 
-    # 1 — Classifier
-    classification = await ClassifierAgent(db).run(call.id, "+15005550006")
-    assert classification.is_scam
-
-    # 2 — Persona
-    persona = await PersonaAgent(db).run(call.id, classification.scam_type)
+    # 1 — Persona (no pre-call scam triage from caller ID)
+    persona = await PersonaAgent(db).run(call.id, "unknown")
     assert persona.db_id is not None
     assert persona.name == "Grandma Betty"
 
-    # 3 — Dialogue (mock path)
+    # 2 — Seed transcript + post-call classification (mirrors voice pipeline)
+    db.add(
+        TranscriptSegment(
+            call_id=call.id,
+            speaker="scammer",
+            text="This is the IRS, you owe back taxes and must pay today.",
+            timestamp_ms=0,
+            is_final=True,
+            confidence=1.0,
+        )
+    )
+    db.add(
+        TranscriptSegment(
+            call_id=call.id,
+            speaker="persona",
+            text="Oh my stars, which IRS office is this again?",
+            timestamp_ms=1_000,
+            is_final=True,
+            confidence=1.0,
+        )
+    )
+    await db.commit()
+    classification = await ClassifierAgent(db).run_post_transcript(call.id, "+15005550006")
+    assert classification.is_scam
+
+    # 3 — Dialogue (may use mock or hosted LLM depending on env)
     dialogue = await DialogueAgent(db).run(
         call.id, persona, [], "You owe back taxes!"
     )
     assert len(dialogue.utterance) > 0
-    assert dialogue.mocked is True
 
     # 4 — Highlights
     highlights = await HighlightMinerAgent(db).run(call.id)

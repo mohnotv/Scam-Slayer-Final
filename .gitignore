@@ -63,3 +63,8 @@ backend/tmp/
 clips/
 *.mp4
 *.srt
+
+# Local dev / runtime
+.local/
+.logs/
+.voice_cache/

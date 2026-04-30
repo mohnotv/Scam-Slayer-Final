@@ -9,6 +9,7 @@ Public API:
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.app.config import settings
@@ -33,10 +34,24 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
+def _ensure_calls_recording_columns(sync_conn) -> None:
+    """SQLite: add recording columns to existing `calls` tables (create_all does not alter)."""
+    r = sync_conn.execute(text("PRAGMA table_info(calls)"))
+    cols = {row[1] for row in r.fetchall()}
+    if "recording_sid" not in cols:
+        sync_conn.execute(text("ALTER TABLE calls ADD COLUMN recording_sid VARCHAR(100)"))
+    if "recording_url" not in cols:
+        sync_conn.execute(text("ALTER TABLE calls ADD COLUMN recording_url TEXT"))
+    if "recording_duration_seconds" not in cols:
+        sync_conn.execute(text("ALTER TABLE calls ADD COLUMN recording_duration_seconds INTEGER DEFAULT 0"))
+
+
 async def init_db() -> None:
     """Create all tables if they don't already exist. No Alembic yet."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        if "sqlite" in settings.database_url:
+            await conn.run_sync(_ensure_calls_recording_columns)
 
 
 async def close_db_engine() -> None:

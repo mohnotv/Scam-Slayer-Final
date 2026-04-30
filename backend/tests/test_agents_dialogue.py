@@ -2,7 +2,7 @@
 Dialogue Agent tests.
 
 All tests use MOCK_CLAUDE=true (the default) so no API key is needed.
-The Claude-path is covered by a patch test that verifies the dispatch logic.
+The hosted-LLM path is covered by a patch test that verifies the dispatch logic.
 """
 
 import pytest
@@ -43,7 +43,9 @@ async def test_utterance_is_nonempty(
 async def test_mocked_flag_true_by_default(
     db: AsyncSession, call: Call, persona: PersonaResult
 ) -> None:
-    result = await DialogueAgent(db).run(call.id, persona, [], "Hello.")
+    with patch("backend.app.agents.dialogue.settings") as mock_settings:
+        mock_settings.mock_claude = True
+        result = await DialogueAgent(db).run(call.id, persona, [], "Hello.")
     assert result.mocked is True
 
 
@@ -90,28 +92,30 @@ async def test_responses_cycle_across_turns(
         history.append({"role": "assistant", "content": "betty"})
 
     # Turn n should wrap around to fixture[0]
-    result_n = await DialogueAgent(db).run(call.id, persona, history, "scammer again")
+    with patch("backend.app.agents.dialogue.settings") as mock_settings:
+        mock_settings.mock_claude = True
+        result_n = await DialogueAgent(db).run(call.id, persona, history, "scammer again")
     assert result_n.utterance == fixture[0]
 
 
 # ── Mock toggle → dispatches to Claude path ───────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_mock_false_calls_claude(
+async def test_mock_false_calls_llm(
     db: AsyncSession, call: Call, persona: PersonaResult
 ) -> None:
-    """When mock_claude=False, DialogueAgent should call the Claude API."""
+    """When mock_claude=False, DialogueAgent should call the hosted LLM."""
     fake_response = "Oh my stars, honey, I need to find my glasses first."
 
     with patch("backend.app.agents.dialogue.settings") as mock_settings, \
-         patch.object(DialogueAgent, "_call_claude", new_callable=AsyncMock) as mock_claude:
+         patch.object(DialogueAgent, "_call_llm", new_callable=AsyncMock) as mock_llm:
         mock_settings.mock_claude = False
-        mock_settings.anthropic_model = "claude-sonnet-4-5"
-        mock_claude.return_value = fake_response
+        mock_settings.llm_provider = "gemini"
+        mock_llm.return_value = fake_response
 
         result = await DialogueAgent(db).run(call.id, persona, [], "Pay now!")
 
-    mock_claude.assert_called_once()
+    mock_llm.assert_called_once()
     assert result.utterance == fake_response
     assert result.mocked is False
 

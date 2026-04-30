@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.agents.highlights import HighlightsResult
 from backend.app.db.models import AgentEvent, Clip
+from backend.app.services.llm_client import generate_text
+from backend.app.services.runtime_settings import get_active_llm_provider
 
 
 class SocialResult(BaseModel):
@@ -80,7 +82,12 @@ class SocialAgent:
         Returns:
             SocialResult with caption, hashtags, and posting window.
         """
-        result = self._generate_mock(call_duration_seconds, highlights)
+        try:
+            result = await self._generate_llm(call_duration_seconds, highlights)
+            mocked = False
+        except Exception:
+            result = self._generate_mock(call_duration_seconds, highlights)
+            mocked = True
 
         # Persist caption + hashtags back to the Clip row
         clip_q = await self._db.execute(select(Clip).where(Clip.id == clip_db_id))
@@ -99,7 +106,7 @@ class SocialAgent:
                 "caption_length": len(result.caption),
                 "hashtag_count": len(result.hashtags),
                 "suggested_post_time": result.suggested_post_time,
-                "mocked": True,
+                "mocked": mocked,
             },
         ))
         await self._db.commit()
@@ -137,3 +144,42 @@ class SocialAgent:
             hashtags=cls._HASHTAGS,
             suggested_post_time="Thursday 7–9 PM ET",
         )
+
+    async def _generate_llm(
+        self,
+        call_duration_seconds: int,
+        highlights: HighlightsResult,
+    ) -> SocialResult:
+        best = (
+            max(highlights.highlights, key=lambda h: h.score)
+            if highlights.highlights
+            else None
+        )
+        snippet = best.transcript_snippet if best else ""
+        system = (
+            "You write short-form social captions for scam-bait clips.\n"
+            "Return JSON only: {caption:string, hashtags:[string], suggested_post_time:string}.\n"
+            "Keep caption under 300 chars. Include 6-10 hashtags."
+        )
+        user = (
+            f"Call duration seconds: {call_duration_seconds}\n"
+            f"Best highlight snippet: {snippet}\n"
+            "Write the social package."
+        )
+        provider = await get_active_llm_provider(self._db)
+        text = await generate_text(
+            provider=provider,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            max_tokens=220,
+        )
+        import json as _json
+
+        data = _json.loads(text)
+        caption = str(data.get("caption", "")).strip()
+        hashtags = data.get("hashtags") or self._HASHTAGS
+        if not isinstance(hashtags, list):
+            hashtags = self._HASHTAGS
+        hashtags = [str(h) for h in hashtags][:12]
+        suggested = str(data.get("suggested_post_time", "Thursday 7–9 PM ET"))
+        return SocialResult(caption=caption, hashtags=hashtags, suggested_post_time=suggested)

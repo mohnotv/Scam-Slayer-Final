@@ -60,6 +60,11 @@ class Call(Base):
     persona_id: Mapped[int | None] = mapped_column(ForeignKey("personas.id"), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="active")  # active|ended|error
 
+    # Twilio dual-channel recording (see <Start><Recording> on first answer TwiML).
+    recording_sid: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    recording_url: Mapped[str | None] = mapped_column(Text, nullable=True)  # Twilio RecordingUri if provided
+    recording_duration_seconds: Mapped[int] = mapped_column(Integer, default=0)
+
     persona: Mapped["Persona | None"] = relationship("Persona", back_populates="calls")
     transcript_segments: Mapped[list["TranscriptSegment"]] = relationship(
         "TranscriptSegment", back_populates="call"
@@ -133,3 +138,13 @@ class AgentEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     call: Mapped["Call"] = relationship("Call", back_populates="agent_events")
+
+
+class AppSetting(Base):
+    """Simple key-value settings persisted in SQLite."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(100), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

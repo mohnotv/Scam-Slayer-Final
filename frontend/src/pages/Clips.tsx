@@ -47,16 +47,6 @@ function ClipCard({ clip }: { clip: Clip }) {
           <p className="text-xs text-slate-300 leading-relaxed line-clamp-3">{clip.caption}</p>
         )}
 
-        {clip.hashtags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {clip.hashtags.map((tag) => (
-              <span key={tag} className="text-xs text-blue-400">
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
-
         {isReady && (
           <a
             href={clipUrl(clip.call_id)}

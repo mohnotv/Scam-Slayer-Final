@@ -40,6 +40,14 @@ class PersonaOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ActivePersonaIn(BaseModel):
+    persona_name: str
+
+
+class ActivePersonaOut(BaseModel):
+    persona_name: str | None
+
+
 def _to_out(p: Persona) -> PersonaOut:
     return PersonaOut(
         id=p.id,
@@ -53,8 +61,34 @@ def _to_out(p: Persona) -> PersonaOut:
 
 @router.get("", response_model=list[PersonaOut])
 async def list_personas(db: AsyncSession = Depends(get_db)) -> list[PersonaOut]:
+    from backend.app.agents.persona import PersonaAgent
+
+    await PersonaAgent.ensure_default_personas(db)
     result = await db.execute(select(Persona).order_by(Persona.name))
     return [_to_out(p) for p in result.scalars().all()]
+
+
+@router.get("/active", response_model=ActivePersonaOut)
+async def get_active_persona(db: AsyncSession = Depends(get_db)) -> ActivePersonaOut:
+    from backend.app.agents.persona import PersonaAgent
+
+    await PersonaAgent.ensure_default_personas(db)
+    active = await PersonaAgent.get_locked_persona_name(db)
+    return ActivePersonaOut(persona_name=active)
+
+
+@router.put("/active", response_model=ActivePersonaOut)
+async def set_active_persona(body: ActivePersonaIn, db: AsyncSession = Depends(get_db)) -> ActivePersonaOut:
+    from backend.app.agents.persona import PersonaAgent
+
+    await PersonaAgent.ensure_default_personas(db)
+    result = await db.execute(select(Persona).where(Persona.name == body.persona_name))
+    persona = result.scalar_one_or_none()
+    if persona is None:
+        raise HTTPException(status_code=404, detail="Persona not found")
+
+    await PersonaAgent.set_locked_persona_name(db, body.persona_name)
+    return ActivePersonaOut(persona_name=body.persona_name)
 
 
 @router.post("", response_model=PersonaOut, status_code=201)

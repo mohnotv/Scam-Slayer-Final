@@ -3,19 +3,42 @@ Application configuration — loaded once at import time from environment variab
 All secrets must live in .env only. Never hardcode values here.
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Resolve relative to repo root (not process cwd) to avoid surprises when
+        # uvicorn is started from a different working directory.
+        env_file=str(Path(__file__).resolve().parents[2] / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
+    # ── LLM provider ───────────────────────────────────────────────────────────
+    # Which hosted LLM to use when MOCK_CLAUDE=false.
+    # Supported: "anthropic" | "gemini"
+    llm_provider: str = "anthropic"
+
     # ── Anthropic ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = "sk-ant-placeholder"
     anthropic_model: str = "claude-sonnet-4-5"
+
+    # ── Gemini ────────────────────────────────────────────────────────────────
+    # Uses Google Gemini Generative Language API (REST).
+    gemini_api_key: str = "placeholder"
+    # Recommended "best quality" default.
+    # Example: gemini-2.5-pro-latest
+    gemini_model: str = "gemini-2.5-pro-latest"
+
+    # ── ElevenLabs voice tuning ────────────────────────────────────────────────
+    elevenlabs_model_id: str = "eleven_turbo_v2_5"
+    elevenlabs_stability: float = 0.35
+    elevenlabs_similarity_boost: float = 0.85
+    elevenlabs_style: float = 0.35
+    elevenlabs_use_speaker_boost: bool = True
 
     # ── Twilio ─────────────────────────────────────────────────────────────────
     twilio_account_sid: str = "ACplaceholder"
@@ -38,6 +61,14 @@ class Settings(BaseSettings):
     # Public HTTPS URL from `ngrok http 8000` — used for Twilio webhook config
     ngrok_url: str = "https://placeholder.ngrok-free.app"
 
+    # ── Voice mode ─────────────────────────────────────────────────────────────
+    # "gather": Twilio <Gather input="speech"> (no Deepgram required)
+    # "stream": Twilio Media Streams WebSocket (Deepgram integration TODO)
+    voice_mode: str = "gather"
+
+    # When true, Twilio records the full call audio (requires recording status webhook URL).
+    record_voice_calls: bool = True
+
     # ── Safety ─────────────────────────────────────────────────────────────────
     # Hard cap on call duration; call is hung up after this many seconds
     max_call_duration_seconds: int = 300
@@ -47,10 +78,13 @@ class Settings(BaseSettings):
     debug: bool = False      # enables FastAPI debug mode + SQLAlchemy echo
 
     # ── Agent toggles ──────────────────────────────────────────────────────────
-    # Set MOCK_CLAUDE=false (and provide a real ANTHROPIC_API_KEY) to use the
-    # live Claude API in the Dialogue Agent.  True by default so the system
-    # runs without any API key during development.
+    # Set MOCK_CLAUDE=false to use the configured hosted LLM (LLM_PROVIDER).
+    # True by default so the system runs without any API key during development.
     mock_claude: bool = True
+
+    # Max chat messages (user+assistant) sent to the dialogue LLM per turn.
+    # Set high so long calls keep full context; lower if you need smaller API payloads.
+    dialogue_max_history_messages: int = 4000
 
 
 settings = Settings()

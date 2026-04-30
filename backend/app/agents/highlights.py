@@ -24,6 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import AgentEvent, Highlight, TranscriptSegment
+from backend.app.services.llm_client import generate_text
+from backend.app.services.runtime_settings import get_active_llm_provider
 
 
 class HighlightData(BaseModel):
@@ -89,7 +91,12 @@ class HighlightMinerAgent:
         INSERTs Highlight rows, and returns HighlightsResult.
         """
         segments = await self._fetch_final_segments(call_id)
-        orm_highlights = self._mine_mock(call_id, segments)
+        try:
+            orm_highlights = await self._mine_llm(call_id, segments)
+            mocked = False
+        except Exception:
+            orm_highlights = self._mine_mock(call_id, segments)
+            mocked = True
 
         for h in orm_highlights:
             self._db.add(h)
@@ -101,7 +108,7 @@ class HighlightMinerAgent:
             event_type="highlights_mined",
             payload={
                 "highlight_count": len(orm_highlights),
-                "mocked": True,
+                "mocked": mocked,
                 "segment_count": len(segments),
             },
         ))
@@ -151,3 +158,37 @@ class HighlightMinerAgent:
                 transcript_snippet=snippet,
             ))
         return highlights
+
+    async def _mine_llm(self, call_id: int, segments: list[TranscriptSegment]) -> list[Highlight]:
+        transcript = "\n".join([f"{s.speaker}: {s.text}" for s in segments])[:8000]
+        system = (
+            "You are a highlight miner for scam-bait call transcripts.\n"
+            "Return JSON only: {highlights:[{start_ms,end_ms,reason,score,transcript_snippet}]}.\n"
+            "Pick exactly 3 highlights. score is 0-1."
+        )
+        user = f"Transcript:\n{transcript}\n\nReturn 3 highlight moments."
+        provider = await get_active_llm_provider(self._db)
+        text = await generate_text(
+            provider=provider,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            max_tokens=400,
+        )
+        import json
+
+        data = json.loads(text)
+        out: list[Highlight] = []
+        for h in (data.get("highlights") or [])[:3]:
+            out.append(
+                Highlight(
+                    call_id=call_id,
+                    start_ms=int(h.get("start_ms", 0)),
+                    end_ms=int(h.get("end_ms", 0)),
+                    reason=str(h.get("reason", "highlight")),
+                    score=float(h.get("score", 0.5)),
+                    transcript_snippet=str(h.get("transcript_snippet", ""))[:240],
+                )
+            )
+        if len(out) != 3:
+            raise ValueError("LLM highlights did not return 3 items")
+        return out

@@ -11,12 +11,14 @@ GET  /{id}/events       — agent event log for dashboard replay
 """
 
 import json as _json
+import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,9 +30,11 @@ from backend.app.agents.editor import EditorAgent
 from backend.app.agents.highlights import HighlightMinerAgent
 from backend.app.agents.persona import PersonaAgent
 from backend.app.agents.social import SocialAgent
+from backend.app.config import settings
 from backend.app.db.models import AgentEvent, Call, Clip, Highlight, TranscriptSegment
 from backend.app.db.session import get_db
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/calls", tags=["calls"])
 
 # ── Shared response models ─────────────────────────────────────────────────────
@@ -88,6 +92,7 @@ class SimulateRequest(BaseModel):
         min_length=1,
         description="Ordered list of things the scammer says. Betty responds to each.",
     )
+    persona_name: str | None = None
 
 
 class SimulateResponse(BaseModel):
@@ -107,6 +112,7 @@ class SimulateResponse(BaseModel):
 
 class CallListItem(BaseModel):
     id: int
+    caller_number: str
     started_at: str
     duration_seconds: int
     persona_name: str | None
@@ -136,6 +142,8 @@ class CallDetail(BaseModel):
     highlights: list[HighlightRow]
     clip_url: str | None   # relative URL to stream the file
     clip: ClipOut | None
+    recording_available: bool = False
+    recording_duration_seconds: int = 0
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -175,12 +183,12 @@ async def simulate_call(
 
     Pipeline:
       1. Create a Call row (twilio_call_sid = "SIM_<uuid>")
-      2. ClassifierAgent  → tag call as scam
-      3. PersonaAgent     → select Grandma Betty
-      4. For each utterance:
+      2. PersonaAgent     → select persona (scam_type unknown until transcript exists)
+      3. For each utterance:
              a. Write scammer TranscriptSegment
              b. DialogueAgent → Betty's response
              c. Write persona TranscriptSegment
+      4. ClassifierAgent.run_post_transcript → is_scam, scam_type from full transcript
       5. Mark Call ended, set duration
       6. HighlightMinerAgent  → 3 highlights
       7. EditorAgent          → placeholder .mp4
@@ -199,21 +207,17 @@ async def simulate_call(
     await db.commit()
     await db.refresh(call)
 
-    # ── 2. Classify ───────────────────────────────────────────────────────────
-    classification = await ClassifierAgent(db).run(call.id, "SIMULATED")
-    call.is_scam = classification.is_scam
-    call.scam_confidence = classification.confidence
-    call.scam_type = classification.scam_type
-    db.add(call)
-    await db.commit()
-
-    # ── 3. Persona ────────────────────────────────────────────────────────────
-    persona = await PersonaAgent(db).run(call.id, classification.scam_type)
+    # ── 2. Persona (no pre-call scam triage — persona reacts to dialogue only) ─
+    persona = await PersonaAgent(db).run(
+        call.id,
+        "unknown",
+        persona_name=body.persona_name,
+    )
     call.persona_id = persona.db_id
     db.add(call)
     await db.commit()
 
-    # ── 4. Dialogue loop ──────────────────────────────────────────────────────
+    # ── 3. Dialogue loop ──────────────────────────────────────────────────────
     dialogue_agent = DialogueAgent(db)
     history: list[dict[str, str]] = []
     # Simulate 2 s per turn (1 s scammer + 1 s Betty)
@@ -245,6 +249,14 @@ async def simulate_call(
             confidence=1.0,
         ))
         await db.commit()
+
+    # ── 4. Classify from transcript (after persona dialogue) ──────────────────
+    classification = await ClassifierAgent(db).run_post_transcript(call.id, "SIMULATED")
+    call.is_scam = classification.is_scam
+    call.scam_confidence = classification.confidence
+    call.scam_type = classification.scam_type
+    db.add(call)
+    await db.commit()
 
     # ── 5. Close call ─────────────────────────────────────────────────────────
     duration_seconds = len(body.scammer_utterances) * ms_per_turn // 1000
@@ -330,6 +342,7 @@ async def list_calls(
         clip_id = c.clips[0].id if c.clips else None
         out.append(CallListItem(
             id=c.id,
+            caller_number=c.caller_number,
             started_at=c.started_at.isoformat(),
             duration_seconds=c.duration_seconds,
             persona_name=c.persona.name if c.persona else None,
@@ -386,6 +399,39 @@ async def get_call(call_id: int, db: AsyncSession = Depends(get_db)) -> CallDeta
         highlights=[HighlightRow.model_validate(h) for h in highlights],
         clip_url=clip_url,
         clip=_clip_orm_to_out(clip_orm) if clip_orm else None,
+        recording_available=bool((call.recording_sid or "").strip()),
+        recording_duration_seconds=int(call.recording_duration_seconds or 0),
+    )
+
+
+# ── GET /{id}/recording ─────────────────────────────────────────────────────
+
+
+@router.get("/{call_id}/recording")
+async def get_call_recording(call_id: int, db: AsyncSession = Depends(get_db)) -> Response:
+    """Stream the Twilio dual-channel MP3 for a completed call (requires recording_sid)."""
+    call = await _require_call(call_id, db)
+    sid = (call.recording_sid or "").strip()
+    if not sid:
+        raise HTTPException(status_code=404, detail="No call recording available yet")
+
+    url = (
+        f"https://api.twilio.com/2010-04-01/Accounts/{settings.twilio_account_sid}/Recordings/{sid}.mp3"
+    )
+    auth = (settings.twilio_account_sid, settings.twilio_auth_token)
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.get(url, auth=auth)
+    if r.status_code != 200:
+        logger.error("Twilio recording fetch failed: %s %s", r.status_code, (r.text or "")[:500])
+        raise HTTPException(status_code=502, detail="Could not fetch recording from Twilio")
+
+    return Response(
+        content=r.content,
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f'inline; filename="call_{call_id}.mp3"',
+        },
     )
 
 

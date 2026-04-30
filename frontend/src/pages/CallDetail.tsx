@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
-import { getCall, generateClip, clipUrl, type CallDetail as CallDetailType, type HighlightRow } from "../lib/api";
+import {
+  coachChat,
+  coachChatForSegment,
+  getCall,
+  generateClip,
+  clipUrl,
+  type CallDetail as CallDetailType,
+  type HighlightRow,
+} from "../lib/api";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -45,7 +53,17 @@ function HighlightCard({ h, rank }: { h: HighlightRow; rank: number }) {
 
 // ── Chat bubble ────────────────────────────────────────────────────────────────
 
-function Bubble({ speaker, text, ts }: { speaker: string; text: string; ts: number }) {
+function Bubble({
+  speaker,
+  text,
+  ts,
+  onWhy,
+}: {
+  speaker: string;
+  text: string;
+  ts: number;
+  onWhy?: () => void;
+}) {
   const isPersona = speaker === "persona";
   return (
     <div className={`flex gap-3 ${isPersona ? "flex-row" : "flex-row-reverse"}`}>
@@ -70,7 +88,18 @@ function Bubble({ speaker, text, ts }: { speaker: string; text: string; ts: numb
         >
           {text}
         </div>
-        <span className="font-mono text-[10px] text-slate-600 px-1">{fmtMs(ts)}</span>
+        <div className={`flex items-center gap-2 px-1 ${isPersona ? "justify-start" : "justify-end"}`}>
+          <span className="font-mono text-[10px] text-slate-600">{fmtMs(ts)}</span>
+          {isPersona && onWhy && (
+            <button
+              onClick={onWhy}
+              className="text-[10px] text-slate-400 hover:text-slate-200 underline underline-offset-2"
+              type="button"
+            >
+              Why?
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -87,6 +116,10 @@ export default function CallDetail() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [clipMsg, setClipMsg] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"conversation" | "transcript" | "coach">("conversation");
+  const [coachInput, setCoachInput] = useState("");
+  const [coachLoading, setCoachLoading] = useState(false);
+  const [coachHistory, setCoachHistory] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
 
   const load = () =>
     getCall(callId)
@@ -94,6 +127,13 @@ export default function CallDetail() {
       .finally(() => setLoading(false));
 
   useEffect(() => { load(); }, [callId]);
+  useEffect(() => {
+    if (!call || call.status !== "active") return;
+    const id = window.setInterval(() => {
+      getCall(callId).then(setCall).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(id);
+  }, [call, callId]);
 
   const handleGenerateClip = async () => {
     setGenerating(true);
@@ -106,6 +146,38 @@ export default function CallDetail() {
       setClipMsg(`Error: ${(e as Error).message}`);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleAskCoach = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = coachInput.trim();
+    if (!q) return;
+    setCoachInput("");
+    setCoachHistory((h) => [...h, { role: "user", text: q }]);
+    setCoachLoading(true);
+    try {
+      const out = await coachChat(callId, q);
+      setCoachHistory((h) => [...h, { role: "assistant", text: out.answer }]);
+    } catch (err) {
+      setCoachHistory((h) => [...h, { role: "assistant", text: `Error: ${(err as Error).message}` }]);
+    } finally {
+      setCoachLoading(false);
+    }
+  };
+
+  const askCoachAboutSegment = async (segmentId: number, text: string) => {
+    const q = `Why did you say: "${text}"?`;
+    setActiveTab("coach");
+    setCoachHistory((h) => [...h, { role: "user", text: q }]);
+    setCoachLoading(true);
+    try {
+      const out = await coachChatForSegment(callId, segmentId, q);
+      setCoachHistory((h) => [...h, { role: "assistant", text: out.answer }]);
+    } catch (err) {
+      setCoachHistory((h) => [...h, { role: "assistant", text: `Error: ${(err as Error).message}` }]);
+    } finally {
+      setCoachLoading(false);
     }
   };
 
@@ -141,16 +213,28 @@ export default function CallDetail() {
             <h1 className="text-xl font-semibold text-white flex items-center gap-2">
               Call{" "}
               <span className="font-mono text-green-400">#{call.id}</span>
-              {call.is_scam && (
-                <span className="text-xs font-medium px-2 py-0.5 bg-red-500/20 text-red-400 border border-red-500/30 rounded">
-                  SCAM
-                </span>
-              )}
             </h1>
             <p className="text-xs text-slate-500 font-mono mt-0.5">
-              {call.scam_type} · {(call.scam_confidence * 100).toFixed(0)}% confidence ·{" "}
-              {call.duration_seconds}s · {call.persona_name ?? "no persona"}
+              from {call.caller_number || "unknown"} · {call.duration_seconds}s · {call.persona_name ?? "no persona"}
             </p>
+            {call.recording_available && (
+              <div className="mt-3 max-w-md">
+                <p className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Call recording</p>
+                <audio
+                  controls
+                  className="w-full h-9"
+                  src={`/api/calls/${call.id}/recording`}
+                  preload="metadata"
+                >
+                  Your browser does not support audio playback.
+                </audio>
+                {call.recording_duration_seconds > 0 && (
+                  <p className="text-[10px] text-slate-600 mt-1 font-mono">
+                    Twilio recording · {call.recording_duration_seconds}s
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -174,29 +258,122 @@ export default function CallDetail() {
         </p>
       )}
 
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setActiveTab("conversation")}
+          className={`px-3 py-1.5 rounded text-sm border ${
+            activeTab === "conversation"
+              ? "bg-green-600/20 text-green-300 border-green-500/40"
+              : "bg-navy-900 text-slate-400 border-white/10"
+          }`}
+        >
+          Conversation
+        </button>
+        <button
+          onClick={() => setActiveTab("transcript")}
+          className={`px-3 py-1.5 rounded text-sm border ${
+            activeTab === "transcript"
+              ? "bg-green-600/20 text-green-300 border-green-500/40"
+              : "bg-navy-900 text-slate-400 border-white/10"
+          }`}
+        >
+          Transcript
+        </button>
+        <button
+          onClick={() => setActiveTab("coach")}
+          className={`px-3 py-1.5 rounded text-sm border ${
+            activeTab === "coach"
+              ? "bg-green-600/20 text-green-300 border-green-500/40"
+              : "bg-navy-900 text-slate-400 border-white/10"
+          }`}
+        >
+          Coach Chat
+        </button>
+      </div>
+
       {/* Two-column layout: transcript | sidebar */}
       <div className="flex gap-6 items-start">
 
         {/* ── Transcript (chat bubbles) ── */}
         <div className="flex-1 min-w-0 bg-navy-900 border border-white/10 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-white/10 flex items-center justify-between">
-            <span className="text-sm font-medium text-slate-300">Transcript</span>
+            <span className="text-sm font-medium text-slate-300">
+              {activeTab === "conversation" ? "Conversation" : activeTab === "transcript" ? "Transcript" : "Coach Chat"}
+            </span>
             <span className="text-xs font-mono text-slate-500">
-              {call.transcript.length} segments
+              {activeTab === "coach" ? `${coachHistory.length} messages` : `${call.transcript.length} segments`}
             </span>
           </div>
           <div className="p-5 space-y-4 max-h-[60vh] overflow-y-auto">
-            {call.transcript.length === 0 ? (
+            {activeTab !== "coach" && call.transcript.length === 0 ? (
               <p className="text-slate-600 text-sm text-center py-8">No transcript yet.</p>
+            ) : activeTab === "coach" ? (
+              <>
+                <div className="space-y-2">
+                  {coachHistory.length === 0 ? (
+                    <p className="text-slate-500 text-sm">
+                      Ask things like: "Why did the agent ask that question?" or "Why did it switch tone?"
+                    </p>
+                  ) : (
+                    coachHistory.map((m, i) => (
+                      <div
+                        key={i}
+                        className={`rounded px-3 py-2 text-sm ${
+                          m.role === "user"
+                            ? "bg-white/5 text-slate-200"
+                            : "bg-green-500/10 border border-green-500/20 text-green-100"
+                        }`}
+                      >
+                        {m.text}
+                      </div>
+                    ))
+                  )}
+                </div>
+                <form onSubmit={handleAskCoach} className="pt-2 flex gap-2">
+                  <input
+                    value={coachInput}
+                    onChange={(e) => setCoachInput(e.target.value)}
+                    placeholder="Ask why the AI responded a certain way..."
+                    className="flex-1 bg-navy-950 border border-white/10 rounded px-3 py-2 text-sm text-slate-200"
+                  />
+                  <button
+                    type="submit"
+                    disabled={coachLoading || !coachInput.trim()}
+                    className="px-3 py-2 rounded text-sm bg-green-600 hover:bg-green-500 text-white disabled:opacity-40"
+                  >
+                    {coachLoading ? "Asking..." : "Ask"}
+                  </button>
+                </form>
+              </>
             ) : (
-              call.transcript.map((row) => (
-                <Bubble
-                  key={row.id}
-                  speaker={row.speaker}
-                  text={row.text}
-                  ts={row.timestamp_ms}
-                />
-              ))
+              activeTab === "conversation" ? (
+                call.transcript.map((row) => (
+                  <Bubble
+                    key={row.id}
+                    speaker={row.speaker}
+                    text={row.text}
+                    ts={row.timestamp_ms}
+                    onWhy={
+                      row.speaker === "persona"
+                        ? () => askCoachAboutSegment(row.id, row.text)
+                        : undefined
+                    }
+                  />
+                ))
+              ) : (
+                <div className="space-y-2">
+                  {call.transcript.map((row) => (
+                    <div
+                      key={row.id}
+                      className="grid grid-cols-[90px_90px_1fr] gap-3 text-xs border border-white/5 rounded px-3 py-2"
+                    >
+                      <span className="font-mono text-slate-500">{fmtMs(row.timestamp_ms)}</span>
+                      <span className="uppercase tracking-wide text-slate-400">{row.speaker}</span>
+                      <span className="text-slate-200">{row.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )
             )}
           </div>
         </div>
@@ -225,11 +402,6 @@ export default function CallDetail() {
               {call.clip && (
                 <div className="p-4 space-y-2">
                   <p className="text-xs text-slate-300 leading-relaxed">{call.clip.caption}</p>
-                  <div className="flex flex-wrap gap-1">
-                    {call.clip.hashtags.map((tag) => (
-                      <span key={tag} className="text-xs text-blue-400">{tag}</span>
-                    ))}
-                  </div>
                 </div>
               )}
             </div>

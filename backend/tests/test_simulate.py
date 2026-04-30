@@ -30,6 +30,7 @@ def _make_agent_class_mock(run_return: object) -> MagicMock:
     """Return a class mock whose instances return `run_return` from async run()."""
     instance = MagicMock()
     instance.run = AsyncMock(return_value=run_return)
+    instance.run_post_transcript = AsyncMock(return_value=run_return)
     return MagicMock(return_value=instance)
 
 

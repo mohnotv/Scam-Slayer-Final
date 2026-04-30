@@ -23,6 +23,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface CallListItem {
   id: number;
+  caller_number: string;
   started_at: string;
   duration_seconds: number;
   persona_name: string | null;
@@ -77,10 +78,14 @@ export interface CallDetail {
   highlights: HighlightRow[];
   clip_url: string | null;
   clip: Clip | null;
+  /** True when Twilio has finished storing an MP3 for this call */
+  recording_available: boolean;
+  recording_duration_seconds: number;
 }
 
 export interface SimulateRequest {
   scammer_utterances: string[];
+  persona_name?: string;
 }
 
 export interface SimulateResponse {
@@ -104,6 +109,24 @@ export interface Persona {
   scam_types: string[];
 }
 
+export interface ActivePersona {
+  persona_name: string | null;
+}
+
+export interface CoachChatResponse {
+  answer: string;
+  used_llm: boolean;
+}
+
+export interface Voice {
+  voice_id: string;
+  name: string;
+}
+
+export interface LlmSetting {
+  provider: string;
+}
+
 // ── Calls ──────────────────────────────────────────────────────────────────
 
 export const getCalls = () => request<CallListItem[]>("/calls");
@@ -124,6 +147,12 @@ export const clipUrl = (callId: number) => `/api/calls/${callId}/clip`;
 // ── Personas ───────────────────────────────────────────────────────────────
 
 export const getPersonas = () => request<Persona[]>("/personas");
+export const getActivePersona = () => request<ActivePersona>("/personas/active");
+export const setActivePersona = (persona_name: string) =>
+  request<ActivePersona>("/personas/active", {
+    method: "PUT",
+    body: JSON.stringify({ persona_name }),
+  });
 export const getPersona = (id: number) => request<Persona>(`/personas/${id}`);
 export const createPersona = (body: Omit<Persona, "id">) =>
   request<Persona>("/personas", { method: "POST", body: JSON.stringify(body) });
@@ -141,3 +170,24 @@ export const getClips = () => request<Clip[]>("/clips");
 export const getClip = (id: number) => request<Clip>(`/clips/${id}`);
 export const generateClip = (callId: number) =>
   request<Clip>(`/clips/${callId}/generate`, { method: "POST" });
+
+// ── Coach chat ───────────────────────────────────────────────────────────────
+export const coachChat = (call_id: number, question: string) =>
+  request<CoachChatResponse>("/coach/chat", {
+    method: "POST",
+    body: JSON.stringify({ call_id, question }),
+  });
+
+export const coachChatForSegment = (call_id: number, focus_segment_id: number, question: string) =>
+  request<CoachChatResponse>("/coach/chat", {
+    method: "POST",
+    body: JSON.stringify({ call_id, focus_segment_id, question }),
+  });
+
+// ── Voices (ElevenLabs) ──────────────────────────────────────────────────────
+export const getVoices = () => request<Voice[]>("/voices");
+
+// ── Settings ────────────────────────────────────────────────────────────────
+export const getLlmProvider = () => request<LlmSetting>("/settings/llm");
+export const setLlmProvider = (provider: "gemini" | "anthropic") =>
+  request<LlmSetting>("/settings/llm", { method: "PUT", body: JSON.stringify({ provider }) });
