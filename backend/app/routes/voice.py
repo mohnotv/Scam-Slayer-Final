@@ -18,10 +18,20 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.agents.classifier import ClassifierAgent
-from backend.app.agents.dialogue import DialogueAgent
+from backend.app.agents.dialogue import DialogueAgent, normalize_chat_messages
 from backend.app.agents.highlights import HighlightMinerAgent
 from backend.app.agents.persona import PersonaAgent
 from backend.app.config import settings
+from backend.app.db.models import Call, Highlight, Persona, TranscriptSegment
+from backend.app.db.session import get_db
+from backend.app.services.twilio_client import build_gather_twiml, build_stream_twiml, twilio_say_voice_for_persona
+from backend.app.services.elevenlabs_tts import tts_to_mp3_file
+from backend.app.services.voice_pipeline import (
+    SpeechToTextAgent,
+    TextToSpeechAgent,
+    persist_segment,
+    ResponseGenerator,
+)
 
 
 def _public_https_base() -> str:
@@ -35,16 +45,7 @@ def _public_https_base() -> str:
     if u.startswith("http://"):
         return "https://" + u.removeprefix("http://").lstrip("/")
     return f"https://{u.lstrip('/')}"
-from backend.app.db.models import Call, Highlight, Persona, TranscriptSegment
-from backend.app.db.session import get_db
-from backend.app.services.twilio_client import build_gather_twiml, build_stream_twiml, twilio_say_voice_for_persona
-from backend.app.services.elevenlabs_tts import tts_to_mp3_file
-from backend.app.services.voice_pipeline import (
-    SpeechToTextAgent,
-    TextToSpeechAgent,
-    persist_segment,
-    ResponseGenerator,
-)
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/voice", tags=["voice"])
@@ -449,6 +450,7 @@ async def gather_speech(
     # LLMs expect the transcript to start with the caller (user) when possible.
     if history and history[0]["role"] == "assistant":
         history.insert(0, {"role": "user", "content": "[Call connected—they’re on the line after my greeting.]"})
+    history = normalize_chat_messages(history)
 
     # 2) response generator: generates a funny response (often a question)
     utterance = await ResponseGenerator(db).run(

@@ -3,6 +3,7 @@ import Dashboard from "./pages/Dashboard";
 import CallDetail from "./pages/CallDetail";
 import Personas from "./pages/Personas";
 import Clips from "./pages/Clips";
+import Checks from "./pages/Checks";
 
 function NavItem({ to, label, exact }: { to: string; label: string; exact?: boolean }) {
   return (
@@ -33,6 +34,7 @@ export default function App() {
         <NavItem to="/" label="Dashboard" exact />
         <NavItem to="/personas" label="Personas" />
         <NavItem to="/clips" label="Clips" />
+        <NavItem to="/checks" label="Checks" />
       </nav>
       <main className="p-6 max-w-7xl mx-auto">
         <Routes>
@@ -40,6 +42,7 @@ export default function App() {
           <Route path="/calls/:id" element={<CallDetail />} />
           <Route path="/personas" element={<Personas />} />
           <Route path="/clips" element={<Clips />} />
+          <Route path="/checks" element={<Checks />} />
         </Routes>
       </main>
     </div>

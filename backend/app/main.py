@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import settings
 from backend.app.db.session import close_db_engine, init_db
-from backend.app.routes import calls, clips, coach, personas, settings as settings_routes, voice, voices
+from backend.app.routes import calls, checks, clips, coach, personas, settings as settings_routes, voice, voices
 
 logging.basicConfig(
     level=getattr(logging, settings.log_level.upper(), logging.INFO),
@@ -63,6 +63,7 @@ app.include_router(clips.router, prefix="/api")            # /api/clips/...
 app.include_router(coach.router, prefix="/api")            # /api/coach/...
 app.include_router(voices.router, prefix="/api")           # /api/voices/...
 app.include_router(settings_routes.router, prefix="/api")  # /api/settings/...
+app.include_router(checks.router, prefix="/api")           # /api/checks/...
 
 
 @app.get("/health", tags=["meta"])

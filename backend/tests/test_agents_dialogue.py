@@ -9,9 +9,24 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.agents.dialogue import DialogueAgent, DialogueResult
+from backend.app.agents.dialogue import DialogueAgent, DialogueResult, normalize_chat_messages
 from backend.app.agents.persona import PersonaAgent, PersonaResult
 from backend.app.db.models import AgentEvent, Call
+
+
+def test_normalize_chat_messages_merges_consecutive_users() -> None:
+    msgs = [
+        {"role": "user", "content": "First"},
+        {"role": "user", "content": "Second"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "user", "content": "Third"},
+    ]
+    out = normalize_chat_messages(msgs)
+    assert len(out) == 3
+    assert out[0]["role"] == "user"
+    assert "First" in out[0]["content"] and "Second" in out[0]["content"]
+    assert out[1]["role"] == "assistant"
+    assert out[2]["content"] == "Third"
 
 
 # ── Shared fixture: persona result ────────────────────────────────────────────

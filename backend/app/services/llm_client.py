@@ -105,14 +105,30 @@ async def _gemini_generate(*, system: str, messages: list[ChatMessage], max_toke
         raise RuntimeError(f"Gemini API error {r.status_code}: {r.text[:500]}")
 
     data = r.json()
+    text = _extract_gemini_response_text(data)
+    if not text:
+        pf = data.get("promptFeedback")
+        if pf:
+            logger.warning("Gemini empty text; promptFeedback=%s", pf)
+    return text
+
+
+def _extract_gemini_response_text(data: dict) -> str:
+    """Collect text from all parts; log finishReason when useful."""
     candidates = data.get("candidates") or []
     if not candidates:
         return ""
-    parts = (((candidates[0].get("content") or {}).get("parts")) or [])
-    if not parts:
-        return ""
-    text = parts[0].get("text")
-    return text if isinstance(text, str) else ""
+    c0 = candidates[0]
+    fr = c0.get("finishReason")
+    if fr and str(fr).upper() not in {"STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"}:
+        logger.warning("Gemini finishReason=%s", fr)
+    parts = ((c0.get("content") or {}).get("parts")) or []
+    chunks: list[str] = []
+    for p in parts:
+        t = p.get("text")
+        if isinstance(t, str) and t.strip():
+            chunks.append(t.strip())
+    return " ".join(chunks).strip()
 
 
 async def _list_gemini_generate_models(*, api_key: str) -> list[str]:
@@ -123,7 +139,10 @@ async def _list_gemini_generate_models(*, api_key: str) -> list[str]:
     timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(url)
-    r.raise_for_status()
+    # Gemini sometimes returns transient 503s. Let the caller retry/fallback.
+    if r.status_code >= 400:
+        logger.warning("Gemini ListModels failed %s: %s", r.status_code, (r.text or "")[:200])
+        return []
     data = r.json()
     models = data.get("models") or []
     candidates: list[str] = []
@@ -171,7 +190,12 @@ async def _resolve_working_gemini_model(
     if desired and desired.lower() != "latest" and desired in candidates:
         ordered.append(desired)
 
+    # Prefer stable "latest" aliases when available for this API key.
     preferred = [
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-pro-latest",
+        # Older 1.5 names are not available for some keys/projects, but keep as a fallback.
         "gemini-1.5-pro-latest",
         "gemini-1.5-pro",
         "gemini-1.5-flash-latest",
@@ -185,11 +209,15 @@ async def _resolve_working_gemini_model(
         if c not in ordered:
             ordered.append(c)
 
-    # Probe a few models until one works.
+    # Probe a few models until one works (AND returns non-empty text).
+    #
+    # IMPORTANT: Some Gemini models will return HTTP 200 with empty text parts when the
+    # maxOutputTokens is too low; use a slightly higher cap and temperature=0.0 so the
+    # probe is deterministic and actually yields text.
     probe_payload = {
-        "systemInstruction": {"parts": [{"text": system[:400]}]},
-        "contents": [{"role": "user", "parts": [{"text": (messages[-1]["content"] if messages else "Hi")[:400]}]}],
-        "generationConfig": {"maxOutputTokens": 8, "temperature": 0.2},
+        "systemInstruction": {"parts": [{"text": "Health check. Reply with exactly the word pong."}]},
+        "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
+        "generationConfig": {"maxOutputTokens": 32, "temperature": 0.0},
     }
     timeout = httpx.Timeout(connect=8.0, read=15.0, write=8.0, pool=8.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -199,12 +227,21 @@ async def _resolve_working_gemini_model(
                 r = await client.post(url, json=probe_payload)
             except Exception:  # noqa: BLE001
                 continue
-            if r.status_code < 400:
-                _resolved_gemini_model = m
-                return _resolved_gemini_model
-            # For 404/permission-ish errors, try next model.
-            if r.status_code in {403, 404}:
+            # Retry-ish statuses: try next model.
+            if r.status_code in {403, 404, 429, 500, 503}:
                 continue
+            if r.status_code >= 400:
+                continue
+            try:
+                data = r.json()
+            except Exception:  # noqa: BLE001
+                continue
+            txt = _extract_gemini_response_text(data)
+            if not (txt or "").strip():
+                # Some models return 200 but no text parts (observed in the wild).
+                continue
+            _resolved_gemini_model = m
+            return _resolved_gemini_model
 
     # If none worked, fall back to the first candidate and let the real call raise a useful error.
     _resolved_gemini_model = ordered[0]

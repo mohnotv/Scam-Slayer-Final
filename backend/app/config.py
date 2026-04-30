@@ -86,5 +86,14 @@ class Settings(BaseSettings):
     # Set high so long calls keep full context; lower if you need smaller API payloads.
     dialogue_max_history_messages: int = 4000
 
+    # Max output tokens requested from the hosted LLM per turn.
+    # Providers require a finite limit; set this very high to effectively remove the cap.
+    # (The dialogue prompt still asks for 1–3 sentences, and we still post-process for phone cadence.)
+    dialogue_max_output_tokens: int = 2048
+
+    # Max characters allowed in the final spoken utterance after post-processing.
+    # Increased from the old 520 so we don't chop sentences when the model runs long.
+    dialogue_max_utterance_chars: int = 900
+
 
 settings = Settings()

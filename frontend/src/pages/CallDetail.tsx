@@ -3,11 +3,15 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import {
   coachChat,
   coachChatForSegment,
+  getCoachPrefs,
   getCall,
   generateClip,
   clipUrl,
+  setCoachPrefs,
   type CallDetail as CallDetailType,
   type HighlightRow,
+  type CoachMessage,
+  type CoachPrefs,
 } from "../lib/api";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -119,7 +123,10 @@ export default function CallDetail() {
   const [activeTab, setActiveTab] = useState<"conversation" | "transcript" | "coach">("conversation");
   const [coachInput, setCoachInput] = useState("");
   const [coachLoading, setCoachLoading] = useState(false);
-  const [coachHistory, setCoachHistory] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  const [coachHistory, setCoachHistory] = useState<CoachMessage[]>([]);
+  const [coachPrefs, setCoachPrefsState] = useState<CoachPrefs | null>(null);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [prefsMsg, setPrefsMsg] = useState<string | null>(null);
 
   const load = () =>
     getCall(callId)
@@ -134,6 +141,10 @@ export default function CallDetail() {
     }, 3000);
     return () => window.clearInterval(id);
   }, [call, callId]);
+
+  useEffect(() => {
+    getCoachPrefs().then(setCoachPrefsState).catch(() => {});
+  }, []);
 
   const handleGenerateClip = async () => {
     setGenerating(true);
@@ -154,13 +165,14 @@ export default function CallDetail() {
     const q = coachInput.trim();
     if (!q) return;
     setCoachInput("");
-    setCoachHistory((h) => [...h, { role: "user", text: q }]);
+    const nextHistory: CoachMessage[] = [...coachHistory, { role: "user", content: q }];
+    setCoachHistory(nextHistory);
     setCoachLoading(true);
     try {
-      const out = await coachChat(callId, q);
-      setCoachHistory((h) => [...h, { role: "assistant", text: out.answer }]);
+      const out = await coachChat(callId, q, nextHistory);
+      setCoachHistory((h) => [...h, { role: "assistant", content: out.answer }]);
     } catch (err) {
-      setCoachHistory((h) => [...h, { role: "assistant", text: `Error: ${(err as Error).message}` }]);
+      setCoachHistory((h) => [...h, { role: "assistant", content: `Error: ${(err as Error).message}` }]);
     } finally {
       setCoachLoading(false);
     }
@@ -169,15 +181,31 @@ export default function CallDetail() {
   const askCoachAboutSegment = async (segmentId: number, text: string) => {
     const q = `Why did you say: "${text}"?`;
     setActiveTab("coach");
-    setCoachHistory((h) => [...h, { role: "user", text: q }]);
+    const nextHistory: CoachMessage[] = [...coachHistory, { role: "user", content: q }];
+    setCoachHistory(nextHistory);
     setCoachLoading(true);
     try {
-      const out = await coachChatForSegment(callId, segmentId, q);
-      setCoachHistory((h) => [...h, { role: "assistant", text: out.answer }]);
+      const out = await coachChatForSegment(callId, segmentId, q, nextHistory);
+      setCoachHistory((h) => [...h, { role: "assistant", content: out.answer }]);
     } catch (err) {
-      setCoachHistory((h) => [...h, { role: "assistant", text: `Error: ${(err as Error).message}` }]);
+      setCoachHistory((h) => [...h, { role: "assistant", content: `Error: ${(err as Error).message}` }]);
     } finally {
       setCoachLoading(false);
+    }
+  };
+
+  const savePrefs = async () => {
+    if (!coachPrefs) return;
+    setSavingPrefs(true);
+    setPrefsMsg(null);
+    try {
+      const out = await setCoachPrefs(coachPrefs);
+      setCoachPrefsState(out);
+      setPrefsMsg("Saved. New calls will use this behavior immediately.");
+    } catch (e) {
+      setPrefsMsg(`Error: ${(e as Error).message}`);
+    } finally {
+      setSavingPrefs(false);
     }
   };
 
@@ -201,6 +229,17 @@ export default function CallDetail() {
     );
   }
 
+  const started = new Date(call.started_at);
+  const startedStr = Number.isNaN(started.getTime())
+    ? call.started_at
+    : started.toLocaleString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -216,6 +255,9 @@ export default function CallDetail() {
             </h1>
             <p className="text-xs text-slate-500 font-mono mt-0.5">
               from {call.caller_number || "unknown"} · {call.duration_seconds}s · {call.persona_name ?? "no persona"}
+            </p>
+            <p className="text-[11px] text-slate-600 font-mono mt-1">
+              started {startedStr}
             </p>
             {call.recording_available && (
               <div className="mt-3 max-w-md">
@@ -309,6 +351,49 @@ export default function CallDetail() {
               <p className="text-slate-600 text-sm text-center py-8">No transcript yet.</p>
             ) : activeTab === "coach" ? (
               <>
+                <div className="bg-white/5 border border-white/10 rounded-lg p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-mono text-slate-500 mr-1">Agent behavior</span>
+                    <select
+                      value={coachPrefs?.dialogue_goal ?? "engage"}
+                      onChange={(e) =>
+                        setCoachPrefsState((p) => ({
+                          dialogue_goal: (e.target.value === "clarify" ? "clarify" : "engage"),
+                          humor_level: p?.humor_level ?? "high",
+                        }))
+                      }
+                      className="bg-navy-950 border border-white/10 rounded px-2 py-1 text-xs text-slate-200"
+                    >
+                      <option value="engage">Engage</option>
+                      <option value="clarify">Clarify</option>
+                    </select>
+                    <select
+                      value={coachPrefs?.humor_level ?? "high"}
+                      onChange={(e) =>
+                        setCoachPrefsState((p) => ({
+                          dialogue_goal: p?.dialogue_goal ?? "engage",
+                          humor_level: (["high", "medium", "low", "off"].includes(e.target.value)
+                            ? (e.target.value as CoachPrefs["humor_level"])
+                            : "high"),
+                        }))
+                      }
+                      className="bg-navy-950 border border-white/10 rounded px-2 py-1 text-xs text-slate-200"
+                    >
+                      <option value="high">Humor: high</option>
+                      <option value="medium">Humor: medium</option>
+                      <option value="low">Humor: low</option>
+                      <option value="off">Humor: off</option>
+                    </select>
+                    <button
+                      onClick={savePrefs}
+                      disabled={savingPrefs || !coachPrefs}
+                      className="px-2 py-1 rounded text-xs bg-green-600 hover:bg-green-500 text-white disabled:opacity-40"
+                    >
+                      {savingPrefs ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                  {prefsMsg && <p className="text-xs text-slate-400 mt-2">{prefsMsg}</p>}
+                </div>
                 <div className="space-y-2">
                   {coachHistory.length === 0 ? (
                     <p className="text-slate-500 text-sm">
@@ -324,7 +409,7 @@ export default function CallDetail() {
                             : "bg-green-500/10 border border-green-500/20 text-green-100"
                         }`}
                       >
-                        {m.text}
+                        {m.content}
                       </div>
                     ))
                   )}

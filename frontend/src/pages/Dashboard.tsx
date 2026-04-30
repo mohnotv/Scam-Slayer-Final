@@ -28,6 +28,18 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function formatDateTime(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // ── Dashboard page ─────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
@@ -168,6 +180,7 @@ export default function Dashboard() {
                 <tr className="border-b border-white/10 text-xs text-slate-500 uppercase tracking-wide font-medium">
                   <th className="px-5 py-3 text-left w-16">ID</th>
                   <th className="px-5 py-3 text-left">Incoming</th>
+                  <th className="px-5 py-3 text-left">When</th>
                   <th className="px-5 py-3 text-left">Persona</th>
                   <th className="px-5 py-3 text-right">Highlights</th>
                   <th className="px-5 py-3 text-right">Duration</th>
@@ -187,6 +200,9 @@ export default function Dashboard() {
                     </td>
                     <td className="px-5 py-3.5">
                       <span className="font-mono text-slate-300">{c.caller_number || "unknown"}</span>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <span className="font-mono text-slate-400">{formatDateTime(c.started_at)}</span>
                     </td>
                     <td className="px-5 py-3.5 text-slate-300">
                       {c.persona_name ?? <span className="text-slate-600">—</span>}

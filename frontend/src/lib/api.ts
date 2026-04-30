@@ -109,6 +109,11 @@ export interface Persona {
   scam_types: string[];
 }
 
+export interface PersonaSample {
+  url: string;
+  cache_key: string;
+}
+
 export interface ActivePersona {
   persona_name: string | null;
 }
@@ -118,6 +123,16 @@ export interface CoachChatResponse {
   used_llm: boolean;
 }
 
+export interface CoachMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface CoachPrefs {
+  dialogue_goal: "engage" | "clarify";
+  humor_level: "high" | "medium" | "low" | "off";
+}
+
 export interface Voice {
   voice_id: string;
   name: string;
@@ -125,6 +140,19 @@ export interface Voice {
 
 export interface LlmSetting {
   provider: string;
+}
+
+export interface CheckResult {
+  ok: boolean;
+  latency_ms: number;
+  detail?: string | null;
+}
+
+export interface ChecksOut {
+  gemini: CheckResult;
+  anthropic: CheckResult;
+  elevenlabs: CheckResult;
+  twilio: CheckResult;
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────────
@@ -154,6 +182,8 @@ export const setActivePersona = (persona_name: string) =>
     body: JSON.stringify({ persona_name }),
   });
 export const getPersona = (id: number) => request<Persona>(`/personas/${id}`);
+export const getPersonaSample = (id: number) =>
+  request<PersonaSample>(`/personas/${id}/sample`);
 export const createPersona = (body: Omit<Persona, "id">) =>
   request<Persona>("/personas", { method: "POST", body: JSON.stringify(body) });
 export const updatePersona = (id: number, body: Omit<Persona, "id">) =>
@@ -172,17 +202,26 @@ export const generateClip = (callId: number) =>
   request<Clip>(`/clips/${callId}/generate`, { method: "POST" });
 
 // ── Coach chat ───────────────────────────────────────────────────────────────
-export const coachChat = (call_id: number, question: string) =>
+export const coachChat = (call_id: number, question: string, history: CoachMessage[] = []) =>
   request<CoachChatResponse>("/coach/chat", {
     method: "POST",
-    body: JSON.stringify({ call_id, question }),
+    body: JSON.stringify({ call_id, question, history }),
   });
 
-export const coachChatForSegment = (call_id: number, focus_segment_id: number, question: string) =>
+export const coachChatForSegment = (
+  call_id: number,
+  focus_segment_id: number,
+  question: string,
+  history: CoachMessage[] = [],
+) =>
   request<CoachChatResponse>("/coach/chat", {
     method: "POST",
-    body: JSON.stringify({ call_id, focus_segment_id, question }),
+    body: JSON.stringify({ call_id, focus_segment_id, question, history }),
   });
+
+export const getCoachPrefs = () => request<CoachPrefs>("/coach/preferences");
+export const setCoachPrefs = (body: CoachPrefs) =>
+  request<CoachPrefs>("/coach/preferences", { method: "PUT", body: JSON.stringify(body) });
 
 // ── Voices (ElevenLabs) ──────────────────────────────────────────────────────
 export const getVoices = () => request<Voice[]>("/voices");
@@ -191,3 +230,6 @@ export const getVoices = () => request<Voice[]>("/voices");
 export const getLlmProvider = () => request<LlmSetting>("/settings/llm");
 export const setLlmProvider = (provider: "gemini" | "anthropic") =>
   request<LlmSetting>("/settings/llm", { method: "PUT", body: JSON.stringify({ provider }) });
+
+// ── Checks ───────────────────────────────────────────────────────────────────
+export const getChecks = () => request<ChecksOut>("/checks");

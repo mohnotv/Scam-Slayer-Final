@@ -62,6 +62,8 @@ def build_gather_twiml(
     call_sid: str,
     say_text: str | None = None,
     play_url: str | None = None,
+    reprompt_say_text: str | None = None,
+    reprompt_play_url: str | None = None,
     say_voice: str = "alice",
     speech_silence_seconds: float = 0.5,
     initial_wait_seconds: int = 6,
@@ -113,7 +115,16 @@ def build_gather_twiml(
     response.append(gather)
 
     # If the caller stays silent, Twilio continues to this part.
-    response.say("Sorry, I didn't catch that. Could you say it again?", voice=say_voice)
+    # IMPORTANT: avoid mixing persona ElevenLabs <Play> audio with a Twilio <Say> reprompt,
+    # which sounds like the voice "changes" mid-turn. If we have a reprompt audio clip,
+    # play it; otherwise fall back to Twilio <Say>.
+    if reprompt_play_url:
+        response.play(reprompt_play_url)
+    else:
+        response.say(
+            reprompt_say_text or "Sorry, I didn't catch that. Could you say it again?",
+            voice=say_voice,
+        )
     response.redirect(action, method="POST")
     return str(response)
 

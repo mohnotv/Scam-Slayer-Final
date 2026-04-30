@@ -35,11 +35,32 @@ from backend.app.agents.persona import PersonaResult
 from backend.app.config import settings
 from backend.app.db.models import AgentEvent
 from backend.app.services.llm_client import ChatMessage, generate_text
-from backend.app.services.runtime_settings import get_active_llm_provider
+from backend.app.services.runtime_settings import get_active_llm_provider, get_dialogue_preferences
 
 logger = logging.getLogger(__name__)
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "betty_responses.json"
+
+
+def normalize_chat_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Merge consecutive turns with the same role.
+
+    Gemini and Anthropic expect strict user/model(or assistant) alternation. The voice
+    pipeline can accidentally produce two `user` messages in a row (e.g. transcript
+    edge cases); merging fixes degraded or empty model output without losing text.
+    """
+    out: list[dict[str, str]] = []
+    for m in messages:
+        role = m.get("role")
+        content = (m.get("content") or "").strip()
+        if not content or role not in ("user", "assistant"):
+            continue
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = f"{out[-1]['content']}\n\n{content}".strip()
+        else:
+            out.append({"role": str(role), "content": content})
+    return out
 
 
 class DialogueResult(BaseModel):
@@ -137,17 +158,23 @@ class DialogueAgent:
         t = (scammer_text or "").strip()
         low = t.lower()
         if any(k in low for k in ["transaction", "charge", "charged", "payment", "500", "$"]):
-            return "Hold on—did you say there was a 500-dollar transaction? On what date, and where exactly did it happen?"
+            return (
+                "I want to make sure I have this right. "
+                "What’s the amount, the date, and the merchant/location for the transaction you’re talking about?"
+            )
         if any(k in low for k in ["irs", "tax", "taxes", "arrest", "warrant", "case number"]):
-            return "Okay, wait—who are you with, and what’s my case number? And what do you need me to do first?"
+            return (
+                "Before we go further: what agency are you with, what’s my case number, "
+                "and what’s the official callback number for your department?"
+            )
         if any(k in low for k in ["computer", "refund", "remote", "teamviewer", "anydesk"]):
-            return "Alright—what’s the very first step you want me to do on the computer? Tell me exactly what to click."
-        # Persona-aware tone tweak: Arnab ends with a demand.
-        if persona.name == "Arnab Goswami":
-            return "You are not answering the question. Who are you, and what is the allegation—yes or no?"
-        if persona.name == "Trevor Noah":
-            return "Hold on—wait wait wait, what did you say just now? Who are you with, and what do you need me to do?"
-        return "Sorry—repeat that for me. Who are you with, and what do you need me to do next?"
+            return (
+                "Before I touch anything: what company are you with, what’s the ticket/case ID, "
+                "and what are you asking me to do on the computer?"
+            )
+        # Keep the fallback neutral (no punchlines / persona-specific riffs).
+        _ = persona
+        return "Sorry, I didn’t catch that. Who are you with, and what exactly do you need me to do next?"
 
     @staticmethod
     def _avoid_verbatim_repeat(utterance: str, *, history: list[dict[str, str]], scammer_text: str) -> str:
@@ -170,10 +197,10 @@ class DialogueAgent:
         if last_persona and _norm(last_persona) == _norm(utterance):
             # Generic but effective: pushes the scammer to give the next concrete step.
             if any(k in scammer_text.lower() for k in ["tax", "irs", "arrest", "warrant", "case"]):
-                return "Okay, okay—so what’s the very next step, exactly? And what’s my case number again?"
+                return "What is the next step you need me to take, exactly? And what is my case number?"
             if any(k in scammer_text.lower() for k in ["computer", "refund", "remote", "teamviewer", "anydesk"]):
-                return "Alright—what’s the very next click you need me to do, exactly? Slow like I’m five."
-            return "Alright—what’s the very next step you need me to do, exactly?"
+                return "What is the next step you need me to take on the computer, exactly?"
+            return "What is the next step you need me to take, exactly?"
 
         # Same canned demand twice in a row (common with anchor-style personas).
         hammer = "i am asking you a simple question"
@@ -201,17 +228,18 @@ class DialogueAgent:
         if len(s) < 4:
             return utterance
         if u == s:
+            # Neutral recovery: avoid mirroring the caller verbatim.
             if persona.name == "Arnab Goswami":
-                return "I’m right here on the line—stop stalling. What do you want me to do next, and under what authority?"
+                return "What do you need me to do next, and what authority are you acting under?"
             if persona.name == "Trevor Noah":
-                return "Okay, I’m listening—what’s the actual play here? What do you need from me?"
-            return "I heard you—go on. What’s the next step you’re asking for?"
+                return "What do you need me to do next?"
+            return "What do you need me to do next?"
 
         # Near-verbatim echo of a short caller challenge (e.g. "out of character?")
         if len(s.split()) <= 8 and u in {s, s.rstrip("?"), s + "?"}:
             if persona.name == "Arnab Goswami":
-                return "This is a phone line, not a therapy session—make your charge or move on. What happens next if I don’t comply?"
-            return "Cute—let’s stay on track. What exactly are you trying to get me to do right now?"
+                return "Let’s stay on track. What exactly are you asking me to do right now, and what happens if I don’t?"
+            return "Let’s stay on track. What exactly are you asking me to do right now?"
 
         # Short line that is mostly a phrase lifted from their last utterance (e.g. "Out of character?").
         core = (utterance or "").strip().lower().rstrip("?!.")
@@ -223,8 +251,8 @@ class DialogueAgent:
             and len(scam_low) > len(core) + 12
         ):
             if persona.name == "Arnab Goswami":
-                return "You’re doing theatre—I’m doing cross-examination. What do you need from me on this call, right now?"
-            return "I’m with you—keep going. What’s the actual next step you want?"
+                return "What do you need from me on this call right now, specifically?"
+            return "What do you need from me next, specifically?"
         return utterance
 
     # ── Mock path ──────────────────────────────────────────────────────────────
@@ -238,7 +266,27 @@ class DialogueAgent:
     # ── Real Claude path ───────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_system_prompt(persona: PersonaResult) -> str:
+    def _build_system_prompt(
+        persona: PersonaResult,
+        *,
+        dialogue_goal: str = "engage",
+        humor_level: str = "high",
+    ) -> str:
+        humor_level = (humor_level or "high").lower()
+        humor_on = humor_level != "off"
+        humor_style = (
+            "Use funny and witty banter tied to the caller’s last line."
+            if humor_level == "high"
+            else "Use light wit only when it naturally fits the caller’s last line."
+            if humor_level == "medium"
+            else "Avoid jokes; keep it mostly serious, with only minimal personality."
+        )
+        humor_line = f"- Humor: {humor_style}\n" if humor_on else ""
+        goal_line = (
+            "- Primary goal: engage the scammer with personality and keep them talking while forcing concrete details.\n"
+            if dialogue_goal == "engage"
+            else "- Primary goal: clarify what they want and extract concrete details (employee ID, callback number, exact steps).\n"
+        )
         return f"""You are roleplaying as {persona.name} on a phone call.
 Stay fully in character using the persona below. Sound like this persona—not a generic voice.
 
@@ -253,13 +301,15 @@ SPEECH STYLE
 HOW TO REPLY (caller-driven only)
 ---------------------------------
 - Never break character, no matter what the caller says.
+{goal_line}
 - **One persona the whole call:** keep the same voice, attitude, vocabulary, and any running jokes from your **first** lines through the **last**. Re-read earlier turns when the caller circles back—never sound like you switched to a different character mid-call.
 - Base every reply **only** on what the caller has actually said in this conversation (their words, names, numbers, requests, emotions). Use the **full** chat history you are given; do **not** invent a scenario they have not mentioned.
 - Do **not** label or classify the call (no “IRS scam”, “tech support scam”, etc.) unless the **caller** used those exact words.
-- Pick **one or two** concrete phrases from their **latest** line and respond to those directly. Then ask **one** clear follow-up that makes them explain the **next** step in **their** story.
-- Keep it short: 1–3 complete sentences, natural for spoken TTS.
-- **Voice-only channel:** the caller hears you on a phone—no images, links, QR codes, screen shares, or “look at this picture.” Humor must be **spoken** only (wordplay, mock-innocence, silly exaggeration, a sharp one-liner)—**always tied to their last line**, never random roast.
-- Humor should feel like banter on a phone call: playful, surprising, but still pushing their story forward with your follow-up question.
+- Pick **one or two** concrete phrases from their **latest** line (names, amounts, threats, payment method, “gift cards”, “remote access”, etc.) and respond to those directly.
+- Drive the scammer forward: after your reaction, ask **one** follow-up that forces a **specific** next step (case/employee ID, official callback number, exact app/store name, exact button to click, exact gift card type/amount, etc.).
+- Keep it short: 1–3 **complete** sentences, natural for spoken TTS. Avoid sentence fragments.
+- **Voice-only channel:** the caller hears you on a phone—no images, links, QR codes, screen shares, or “look at this picture.”
+{humor_line}
 - Never give real financial credentials. You may invent plausible fake details if needed.
 - Do not say you are an AI. If accused of being a bot, answer in-character, as a human would.
 - Do not repeat your previous reply verbatim; add new detail or a new angle each turn.
@@ -275,67 +325,125 @@ HOW TO REPLY (caller-driven only)
     ) -> str:
         """Call the configured hosted LLM and return the response text."""
         trimmed_history = history[-self._max_history_messages :]
-        early_call = len(trimmed_history) < 6
-        wit_note = (
-            "This is still near the top of the call—bring a little extra spark: a quick joke or teasing aside "
-            "that fits what they just said (still voice-only, still in-character). "
-            if early_call
-            else ""
-        )
         user_turn = (
-            f'The caller\'s latest words (verbatim): "{scammer_text}"\n\n'
-            "Reply in 1–3 short sentences for spoken voice only (nothing visual). "
-            "React to what they literally said; quote or paraphrase at least one concrete detail from that line. "
-            "Include a witty or funny beat if it fits naturally (still grounded in their words, sayable on a phone). "
-            f"{wit_note}"
-            "Ask exactly one follow-up about the next thing *they* are trying to get you to do—using their wording, not a new script. "
-            "Do not repeat your previous reply or reuse the same closing sentence. "
-            "Do not echo only their latest words—always add your own in-character spin and a forward-moving question."
+            f'Caller just said (verbatim): "{scammer_text}"\n'
+            "Reply in 1–3 complete sentences for spoken voice. React to their actual words; end with one clear follow-up. "
+            "Do not output sentence fragments. "
+            "Do not parrot-only; do not repeat your previous reply."
         )
-        raw_messages = list(trimmed_history) + [{"role": "user", "content": user_turn}]
+        raw_messages = normalize_chat_messages(
+            list(trimmed_history) + [{"role": "user", "content": user_turn}]
+        )
         messages = cast(list[ChatMessage], raw_messages)
         provider = await get_active_llm_provider(self._db)
+        prefs = await get_dialogue_preferences(self._db)
+        goal = prefs.get("dialogue_goal", "engage")
+        humor = prefs.get("humor_level", "high")
+        try:
+            max_out = int(getattr(settings, "dialogue_max_output_tokens", 2048))
+        except (TypeError, ValueError):
+            max_out = 2048
+        # Providers require a finite value; treat non-positive as "very high".
+        if max_out <= 0:
+            max_out = 2048
         text = await generate_text(
             provider=provider,
-            system=self._build_system_prompt(persona),
+            system=self._build_system_prompt(persona, dialogue_goal=goal, humor_level=humor),
             messages=messages,
-            max_tokens=180,
+            max_tokens=max_out,
         )
+        if not (text or "").strip():
+            raise RuntimeError("Hosted LLM returned empty text")
         utterance = self._post_process_utterance(text)
         utterance = self._apply_persona_constraints(persona, utterance)
+        utterance = self._ensure_non_fragment(persona=persona, utterance=utterance, scammer_text=scammer_text)
         return utterance
 
     @staticmethod
-    def _apply_persona_constraints(persona: PersonaResult, utterance: str) -> str:
-        # Trevor: always end with a question/hook (spoken cadence).
+    def _ensure_non_fragment(*, persona: PersonaResult, utterance: str, scammer_text: str) -> str:
+        """
+        Guard against low-quality fragment outputs like "Oh, my stars, you."
+        When these slip through, the call feels broken and the bot tends to repeat itself.
+        """
+        import re
+
+        u = (utterance or "").strip()
+        if not u:
+            return DialogueAgent._emergency_fallback(persona=persona, scammer_text=scammer_text)
+
+        toks = u.split()
+        looks_fragmenty = (
+            len(toks) <= 5
+            and "?" not in u
+            and not re.search(r"\b(because|so|but|and)\b", u.lower())
+        )
+        if not looks_fragmenty:
+            return u
+
+        low = (scammer_text or "").lower()
+        creds = ["credit card", "card number", "cvv", "otp", "pin", "debit card"]
+
+        # Persona-specific recovery so every persona sounds coherent (no fragments),
+        # while still forcing the scammer to explain the next step.
+        if persona.name == "Russell Peters":
+            if any(k in low for k in creds):
+                return (
+                    "That’s cute. Why would I give you my card details—what’s your employee ID "
+                    "and the official callback number?"
+                )
+            return "Okay—slow down. What exactly do you need from me next, and why?"
+        if persona.name == "Jimmy Fallon":
+            if any(k in low for k in creds):
+                return "Nice try. What’s your employee ID and the official number I can call back—then we’ll talk."
+            return "Okay—what exactly do you need me to do next?"
+        if persona.name == "Samay Raina":
+            if any(k in low for k in creds):
+                return "Card details? Bold. What’s your employee ID and the official callback number first?"
+            return "Okay—what’s the next step you want me to do?"
+        if persona.name == "Ronny Chieng":
+            if any(k in low for k in creds):
+                return "No. What’s your employee ID and your official callback number? Then explain why you need my card."
+            return "What exactly do you want me to do next?"
         if persona.name == "Trevor Noah":
-            # If it ends with a period (or nothing), convert to a question.
-            if utterance and utterance[-1] == "." and "?" not in utterance:
-                utterance = utterance[:-1] + "?"
-            if "?" not in utterance:
-                # Gentle hook without forcing a specific topic.
-                utterance = (utterance.rstrip(".! ") + "—right?").strip()
-                if utterance and utterance[-1] != "?":
-                    utterance = utterance + "?"
-        # Arnab: end with a sharp question; avoid mechanically appending the same "simple question" line (causes loops).
+            if any(k in low for k in creds):
+                return "Okay, but why would you need my card details for that? What’s your employee ID and the official number to call back?"
+            return "Okay—what exactly do you need me to do next?"
+        if persona.name == "Arnab Goswami":
+            if any(k in low for k in creds):
+                return "Absolutely not. What is your employee ID, what is the official callback number, and why are you asking for card details?"
+            return "Answer me clearly: who are you with, and what exactly do you want me to do next?"
+        if persona.name == "Miranda Priestly":
+            if any(k in low for k in creds):
+                return "No. Give me your employee ID and the official callback number. Then explain why you need card details."
+            return "Be precise. What do you need me to do next?"
+        if persona.name == "Parrot (Home Alone Vibe)":
+            if any(k in low for k in creds):
+                return "Squawk—nope. What’s your employee ID and the number I can call you back on?"
+            return "Squawk—what do you want me to do next?"
+        if persona.name == "Grandma Betty":
+            if any(k in low for k in creds):
+                return "Oh honey, I’m not giving card numbers on the phone. What’s your name and the official number I can call back?"
+            return "Oh dear—say that again. What do you need me to do next?"
+
+        return DialogueAgent._emergency_fallback(persona=persona, scammer_text=scammer_text)
+
+    @staticmethod
+    def _apply_persona_constraints(persona: PersonaResult, utterance: str) -> str:
+        """
+        Light cleanup only. Heavy-handed punctuation rules were mangling good LLM output
+        and breaking conversational flow on the phone.
+        """
         if persona.name == "Arnab Goswami":
             import re
 
             utterance = re.sub(r",\s*Mr\.\s*$", "", utterance, flags=re.IGNORECASE)
             utterance = re.sub(r"\bMr\.\s*,\s*Mr\.\b", "Mr.", utterance, flags=re.IGNORECASE)
             utterance = utterance.strip()
-            # If the model already asked a question, then tacked on a fragment ("...? I am listening very"),
-            # drop the dangling tail so we don't glue "—yes or no?" onto broken half-sentences.
             if "?" in utterance and not utterance.endswith("?"):
                 last_q = utterance.rfind("?")
                 tail = utterance[last_q + 1 :].strip()
                 if tail and len(tail) < 80:
                     utterance = utterance[: last_q + 1].strip()
-
-            # Arnab should sound prosecutorial, but a canned "yes or no" every turn reads
-            # robotic on the phone (and loops). Only ensure a sentence ending.
-            if utterance and utterance[-1] not in "?!.…":
-                utterance = utterance.rstrip(",;- ") + "?"
         return utterance
 
     @staticmethod
@@ -357,8 +465,19 @@ HOW TO REPLY (caller-driven only)
         if re.fullmatch(r"(the|and|but|so|well|uh|um)\.?", cleaned.strip(), flags=re.IGNORECASE):
             return "Hold on—say that again for me. What’s the very next step you need me to do?"
 
-        # De-dupe accidental repeated sentences (common when we append persona constraints).
+        # Split into sentences; remove tiny broken fragments anywhere in the output
+        # (e.g. "The.", "You.", "Okay.", caused by model truncation or odd decoding).
         parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", cleaned) if p.strip()]
+        junk_words = {"the", "and", "but", "so", "well", "uh", "um", "you", "ok", "okay", "yeah"}
+        filtered: list[str] = []
+        for p in parts:
+            toks = re.sub(r"[^a-z0-9]+", " ", p.lower()).strip().split()
+            if len(toks) <= 2 and toks and toks[0] in junk_words:
+                continue
+            filtered.append(p)
+        parts = filtered
+
+        # De-dupe accidental repeated sentences.
         if len(parts) >= 2:
             deduped: list[str] = []
             seen_norm: set[str] = set()
@@ -368,20 +487,35 @@ HOW TO REPLY (caller-driven only)
                     continue
                 seen_norm.add(norm)
                 deduped.append(p)
-            cleaned = " ".join(deduped).strip()
+            parts = deduped
+        cleaned = " ".join(parts).strip()
+
+        # Fix a common incomplete tail: "... is that a?" / "... is that an?"
+        if re.search(r"\bis that (a|an)\?$", cleaned, flags=re.IGNORECASE):
+            cleaned = re.sub(r"\bis that (a|an)\?$", "is that exactly?", cleaned, flags=re.IGNORECASE).strip()
         # keep it phone-call short for latency and natural rhythm, but preserve sentence boundaries
-        if len(cleaned) > 340:
+        try:
+            cap = int(getattr(settings, "dialogue_max_utterance_chars", 900))
+        except (TypeError, ValueError):
+            cap = 900
+        cap = max(240, min(2000, cap))
+        if len(cleaned) > cap:
             for end in [".", "!", "?"]:
-                idx = cleaned[:340].rfind(end)
+                idx = cleaned[:cap].rfind(end)
                 if idx > 120:
                     cleaned = cleaned[: idx + 1].strip()
                     break
             else:
-                cleaned = cleaned[:340].rsplit(" ", 1)[0].strip()
+                cleaned = cleaned[:cap].rsplit(" ", 1)[0].strip()
         # If upstream cut mid-thought, remove a dangling 1–2 char tail token (common on token cutoffs).
         toks = cleaned.split()
-        if len(toks) >= 2 and len(toks[-1]) <= 2 and toks[-1].lower() not in {"i", "a", "ok"}:
+        if len(toks) >= 3 and len(toks[-1]) <= 2 and toks[-1].lower() not in {"i", "a", "ok", "no", "so"}:
             cleaned = " ".join(toks[:-1]).strip()
+        # Guard against low-quality fragment outputs like "Oh, my stars, you."
+        # If we still got a fragment, force a complete, forward-moving question.
+        toks2 = cleaned.split()
+        if len(toks2) <= 5 and "?" not in cleaned:
+            return "Okay. What exactly do you need me to do next?"
         if cleaned and cleaned[-1] not in ".!?":
             cleaned = f"{cleaned}."
         return cleaned

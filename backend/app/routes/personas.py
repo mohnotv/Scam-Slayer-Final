@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.db.models import Persona
 from backend.app.db.session import get_db
+from backend.app.services.elevenlabs_tts import tts_to_mp3_file
 
 router = APIRouter(prefix="/personas", tags=["personas"])
 
@@ -46,6 +47,11 @@ class ActivePersonaIn(BaseModel):
 
 class ActivePersonaOut(BaseModel):
     persona_name: str | None
+
+
+class PersonaSampleOut(BaseModel):
+    url: str
+    cache_key: str
 
 
 def _to_out(p: Persona) -> PersonaOut:
@@ -142,3 +148,31 @@ async def delete_persona(persona_id: int, db: AsyncSession = Depends(get_db)) ->
         raise HTTPException(status_code=404, detail="Persona not found")
     await db.delete(persona)
     await db.commit()
+
+
+@router.get("/{persona_id}/sample", response_model=PersonaSampleOut)
+async def persona_sample(persona_id: int, db: AsyncSession = Depends(get_db)) -> PersonaSampleOut:
+    """
+    Generate (and cache) a short MP3 in the persona's ElevenLabs voice, for the UI to preview.
+    Served via the existing /voice/audio/{cache_key}.mp3 static handler.
+    """
+    result = await db.execute(select(Persona).where(Persona.id == persona_id))
+    persona = result.scalar_one_or_none()
+    if persona is None:
+        raise HTTPException(status_code=404, detail="Persona not found")
+    voice_id = (persona.elevenlabs_voice_id or "").strip()
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="Persona has no ElevenLabs voice_id set")
+
+    # Keep it short and consistent so the cache is stable.
+    sample_text = (
+        f"Hi—this is {persona.name}. "
+        "I’m on a call right now. Can you tell me your name and what this is about?"
+    )
+    cache_key = f"persona_sample_{persona_id}_{abs(hash(sample_text)) % 1_000_000_000}"
+    mp3_path = await tts_to_mp3_file(text=sample_text, voice_id=voice_id, cache_key=cache_key)
+    if not mp3_path.exists() or mp3_path.stat().st_size <= 0:
+        raise HTTPException(status_code=502, detail="Failed to generate sample audio")
+
+    # NOTE: /voice routes are mounted without the /api prefix (Twilio webhooks + audio).
+    return PersonaSampleOut(url=f"/voice/audio/{cache_key}.mp3", cache_key=cache_key)

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getPersonas, getVoices, updatePersona, type Persona, type Voice } from "../lib/api";
+import { getPersonas, getPersonaSample, getVoices, updatePersona, type Persona, type Voice } from "../lib/api";
 
 function PersonaCard({
   p,
@@ -13,6 +13,8 @@ function PersonaCard({
   const [saving, setSaving] = useState(false);
   const [voiceId, setVoiceId] = useState(p.elevenlabs_voice_id || "");
   const [msg, setMsg] = useState<string | null>(null);
+  const [sampleUrl, setSampleUrl] = useState<string | null>(null);
+  const [loadingSample, setLoadingSample] = useState(false);
 
   const save = async () => {
     setSaving(true);
@@ -31,6 +33,23 @@ function PersonaCard({
       setMsg((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const loadSample = async () => {
+    if (!voiceId) {
+      setMsg("Select a voice ID first, then play a sample.");
+      return;
+    }
+    setLoadingSample(true);
+    setMsg(null);
+    try {
+      const out = await getPersonaSample(p.id);
+      setSampleUrl(out.url);
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setLoadingSample(false);
     }
   };
 
@@ -68,6 +87,25 @@ function PersonaCard({
           >
             {saving ? "Saving..." : "Save voice"}
           </button>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={loadSample}
+            disabled={loadingSample}
+            className="px-3 py-2 rounded text-sm bg-navy-950 hover:bg-white/5 border border-white/10 text-slate-200 disabled:opacity-40"
+          >
+            {loadingSample ? "Generating…" : "Play sample"}
+          </button>
+          {sampleUrl && (
+            <audio
+              controls
+              className="flex-1 h-9"
+              src={sampleUrl}
+              preload="none"
+            >
+              Your browser does not support audio playback.
+            </audio>
+          )}
         </div>
         {msg && <p className="text-xs text-slate-500">{msg}</p>}
       </div>

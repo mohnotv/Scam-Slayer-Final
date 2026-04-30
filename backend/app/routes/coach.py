@@ -13,19 +13,57 @@ from backend.app.db.models import AgentEvent, Call, TranscriptSegment
 from backend.app.db.session import get_db
 from backend.app.services.llm_client import generate_text
 from backend.app.config import settings
+from backend.app.services.runtime_settings import (
+    get_active_llm_provider,
+    get_dialogue_preferences,
+    set_dialogue_preferences,
+)
 
 router = APIRouter(prefix="/coach", tags=["coach"])
 
+class CoachMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
 
 class CoachChatRequest(BaseModel):
     call_id: int
     question: str = Field(min_length=2, max_length=500)
     focus_segment_id: int | None = None
+    history: list[CoachMessage] = []
 
 
 class CoachChatResponse(BaseModel):
     answer: str
     used_llm: bool
+
+
+class CoachPrefsOut(BaseModel):
+    dialogue_goal: str
+    humor_level: str
+
+
+class CoachPrefsIn(BaseModel):
+    dialogue_goal: str = Field(pattern="^(engage|clarify)$")
+    humor_level: str = Field(pattern="^(high|medium|low|off)$")
+
+
+@router.get("/preferences", response_model=CoachPrefsOut)
+async def get_prefs(db: AsyncSession = Depends(get_db)) -> CoachPrefsOut:
+    prefs = await get_dialogue_preferences(db)
+    return CoachPrefsOut(dialogue_goal=prefs["dialogue_goal"], humor_level=prefs["humor_level"])
+
+
+@router.put("/preferences", response_model=CoachPrefsOut)
+async def set_prefs(body: CoachPrefsIn, db: AsyncSession = Depends(get_db)) -> CoachPrefsOut:
+    try:
+        prefs = await set_dialogue_preferences(
+            db,
+            dialogue_goal=body.dialogue_goal,
+            humor_level=body.humor_level,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return CoachPrefsOut(dialogue_goal=prefs["dialogue_goal"], humor_level=prefs["humor_level"])
 
 
 @router.post("/chat", response_model=CoachChatResponse)
@@ -78,45 +116,64 @@ async def coach_chat(body: CoachChatRequest, db: AsyncSession = Depends(get_db))
     events_text = "\n".join([f"{e.agent}/{e.event_type}: {e.payload}" for e in events])[:5000]
 
     system = (
-        "You are a call-analysis assistant for ScamSlayer.\n"
-        "Explain why the AI agent responded the way it did, grounded in transcript and events.\n"
+        "You are ScamSlayer Coach, an interactive chat assistant.\n"
+        "You can answer general questions, but when asked about a call you must ground answers in the provided transcript and agent events.\n"
         "Be concise, factual, and mention uncertainty when needed."
     )
-    parts: list[str] = [
+    context_parts: list[str] = [
         f"Call meta: id={call.id}, persona_id={call.persona_id}, status={call.status}",
         "",
     ]
+    prefs = await get_dialogue_preferences(db)
+    context_parts.extend([
+        f"Current dialogue preferences: goal={prefs['dialogue_goal']}, humor={prefs['humor_level']}",
+        "",
+    ])
     if focus_segment is not None:
-        parts.extend([
+        context_parts.extend([
             f"Focused segment: speaker={focus_segment.speaker}, text={focus_segment.text}",
             "",
         ])
-    parts.extend([
+    context_parts.extend([
         "Transcript:",
         transcript_text,
         "",
         "Agent events:",
         events_text,
         "",
-        f"User question: {body.question}",
+        "If the user asks about the call, use the above context. If they ask a general question, answer normally.",
     ])
-    user = "\n".join(parts)
+    context = "\n".join(context_parts)
+
+    # Convert UI chat history into LLM messages; keep it bounded.
+    messages: list[dict[str, str]] = [{"role": "user", "content": context}]
+    for m in (body.history or [])[-24:]:
+        r = (m.role or "").strip().lower()
+        if r not in {"user", "assistant"}:
+            continue
+        c = (m.content or "").strip()
+        if not c:
+            continue
+        messages.append({"role": r, "content": c})
+    # Append the latest question as the final user turn.
+    messages.append({"role": "user", "content": body.question})
 
     try:
+        provider = await get_active_llm_provider(db)
         answer = await generate_text(
-            provider=settings.llm_provider,
+            provider=provider,
             system=system,
-            messages=[{"role": "user", "content": user}],
-            max_tokens=220,
+            messages=messages,
+            max_tokens=500,
         )
         answer = answer.strip() or "I could not infer a reliable reason from the current transcript."
         return CoachChatResponse(answer=answer, used_llm=True)
     except Exception:
         # deterministic fallback when API keys/models are unavailable
         fallback = (
-            "Based on the transcript, the agent tends to prioritize stalling and clarification. "
-            "It likely responded that way because it detected scam cues and followed persona rules "
-            "(short replies, confusion prompts, and keeping the caller talking)."
+            "I can’t reach the LLM right now, but I can still help. "
+            "If you paste the exact persona line you’re asking about, I’ll point to the most likely trigger in the transcript "
+            "(e.g., gift cards, threats, remote access, urgency) and what the agent was trying to get the scammer to say next."
         )
         return CoachChatResponse(answer=fallback, used_llm=False)
 

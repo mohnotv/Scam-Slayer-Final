@@ -81,10 +81,13 @@ class TextToSpeechAgent:
 
         host = settings.ngrok_url.removeprefix("https://")
         cache_key = f"{call_sid}_{abs(hash(utterance)) % 1_000_000_000}"
+        reprompt_text = "Sorry, I didn't catch that. Could you say it again?"
+        reprompt_cache_key = f"{call_sid}_{abs(hash(reprompt_text)) % 1_000_000_000}"
         if not (voice_id or "").strip():
             return build_gather_twiml(
                 call_sid=call_sid,
                 say_text=utterance,
+                reprompt_say_text=reprompt_text,
                 say_voice=say_voice_eff,
                 speech_silence_seconds=0.5,
             )
@@ -92,9 +95,22 @@ class TextToSpeechAgent:
             mp3_path = await tts_to_mp3_file(text=utterance, voice_id=voice_id, cache_key=cache_key)
             if mp3_path.exists() and mp3_path.stat().st_size > 0:
                 play_url = f"https://{host}/voice/audio/{cache_key}.mp3"
+                reprompt_play_url: str | None = None
+                try:
+                    reprompt_mp3 = await tts_to_mp3_file(
+                        text=reprompt_text,
+                        voice_id=voice_id,
+                        cache_key=reprompt_cache_key,
+                    )
+                    if reprompt_mp3.exists() and reprompt_mp3.stat().st_size > 0:
+                        reprompt_play_url = f"https://{host}/voice/audio/{reprompt_cache_key}.mp3"
+                except Exception:
+                    logger.exception("ElevenLabs TTS failed for reprompt; falling back to Twilio <Say>.")
                 return build_gather_twiml(
                     call_sid=call_sid,
                     play_url=play_url,
+                    reprompt_play_url=reprompt_play_url,
+                    reprompt_say_text=reprompt_text,
                     say_voice=say_voice_eff,
                     speech_silence_seconds=0.5,
                 )
@@ -104,6 +120,7 @@ class TextToSpeechAgent:
         return build_gather_twiml(
             call_sid=call_sid,
             say_text=utterance,
+            reprompt_say_text=reprompt_text,
             say_voice=say_voice_eff,
             speech_silence_seconds=0.5,
         )
