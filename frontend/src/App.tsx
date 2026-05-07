@@ -2,7 +2,6 @@ import { Route, Routes, NavLink } from "react-router-dom";
 import Dashboard from "./pages/Dashboard";
 import CallDetail from "./pages/CallDetail";
 import Personas from "./pages/Personas";
-import Clips from "./pages/Clips";
 import Checks from "./pages/Checks";
 
 function NavItem({ to, label, exact }: { to: string; label: string; exact?: boolean }) {
@@ -33,7 +32,6 @@ export default function App() {
         </div>
         <NavItem to="/" label="Dashboard" exact />
         <NavItem to="/personas" label="Personas" />
-        <NavItem to="/clips" label="Clips" />
         <NavItem to="/checks" label="Checks" />
       </nav>
       <main className="p-6 max-w-7xl mx-auto">
@@ -41,7 +39,6 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/calls/:id" element={<CallDetail />} />
           <Route path="/personas" element={<Personas />} />
-          <Route path="/clips" element={<Clips />} />
           <Route path="/checks" element={<Checks />} />
         </Routes>
       </main>

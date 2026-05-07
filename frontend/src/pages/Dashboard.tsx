@@ -107,8 +107,8 @@ export default function Dashboard() {
 
 
   return (
-    <>
-      <div className="space-y-6">
+    <div className="hellfire-bg border border-white/10 bg-navy-950/40">
+      <div className="hellfire-content p-5 md:p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -227,6 +227,6 @@ export default function Dashboard() {
           </div>
         )}
       </div>
-    </>
+    </div>
   );
 }

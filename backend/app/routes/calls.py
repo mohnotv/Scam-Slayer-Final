@@ -13,7 +13,7 @@ GET  /{id}/events       — agent event log for dashboard replay
 import json as _json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -36,6 +36,21 @@ from backend.app.db.session import get_db
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/calls", tags=["calls"])
+# ── Time formatting ────────────────────────────────────────────────────────────
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """
+    Return an ISO-8601 UTC timestamp with 'Z' suffix.
+
+    Our DB stores naive datetimes created via utcnow(); browsers will interpret
+    timezone-less strings as local time, causing a visible offset. Always emit UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 # ── Shared response models ─────────────────────────────────────────────────────
 
@@ -343,7 +358,7 @@ async def list_calls(
         out.append(CallListItem(
             id=c.id,
             caller_number=c.caller_number,
-            started_at=c.started_at.isoformat(),
+            started_at=_iso_utc(c.started_at) or "",
             duration_seconds=c.duration_seconds,
             persona_name=c.persona.name if c.persona else None,
             is_scam=c.is_scam,
@@ -392,8 +407,8 @@ async def get_call(call_id: int, db: AsyncSession = Depends(get_db)) -> CallDeta
         scam_type=call.scam_type,
         status=call.status,
         duration_seconds=call.duration_seconds,
-        started_at=call.started_at.isoformat(),
-        ended_at=call.ended_at.isoformat() if call.ended_at else None,
+        started_at=_iso_utc(call.started_at) or "",
+        ended_at=_iso_utc(call.ended_at),
         persona_name=call.persona.name if call.persona else None,
         transcript=[TranscriptRow.model_validate(s) for s in segments],
         highlights=[HighlightRow.model_validate(h) for h in highlights],
